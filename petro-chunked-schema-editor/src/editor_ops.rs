@@ -28,12 +28,22 @@ pub struct FlatTreeRow {
     pub depth: usize,
     /// `true` if this node is an 8-bit mini-chunk; `false` if it is a 32-bit chunk.
     pub is_mini_chunk: bool,
+    /// Raw 32-bit chunk ID (or 8-bit mini-chunk ID widened to `u32`).
+    pub raw_id: u32,
     /// Formatted ID label (`"0x0400"` for chunks, `"mc 01 (0x01)"` for mini-chunks).
     pub id_label: String,
     /// Assigned schema field name, if matched.
     pub field_name: Option<String>,
     /// Assigned schema type or payload summary label, if matched.
     pub type_label: Option<String>,
+    /// Module ID of the container whose field matched this node, if matched.
+    pub field_owner_module_id: Option<SchemaId>,
+    /// Module ID owning [`Self::schema_type_ref`], if this node targets a named type.
+    pub schema_module_id: Option<SchemaId>,
+    /// Local type name inside [`Self::schema_module_id`], if this node targets a named type.
+    pub schema_type_ref: Option<String>,
+    /// `(SchemaId, type_name)` of the immediate parent chunk in the file tree (`None` at root).
+    pub parent_type_ref: Option<(SchemaId, String)>,
     /// Payload size in bytes.
     pub size: usize,
     /// Number of direct child chunks or mini-chunks under this node.
@@ -55,7 +65,7 @@ pub fn build_flat_tree(
         if rows.len() >= max_rows {
             break;
         }
-        flatten_chunk(chunk, 0, collapsed_paths, max_rows, &mut rows);
+        flatten_chunk(chunk, 0, None, collapsed_paths, max_rows, &mut rows);
     }
     rows
 }
@@ -63,6 +73,7 @@ pub fn build_flat_tree(
 fn flatten_chunk(
     chunk: &DynamicChunk,
     depth: usize,
+    parent_type_ref: Option<&(SchemaId, String)>,
     collapsed_paths: &BTreeSet<String>,
     max_rows: usize,
     rows: &mut Vec<FlatTreeRow>,
@@ -81,9 +92,14 @@ fn flatten_chunk(
         tree_path: chunk.tree_path.clone(),
         depth,
         is_mini_chunk: false,
+        raw_id: chunk.id,
         id_label: format!("0x{:04X}", chunk.id),
         field_name: chunk.schema_field_name.clone(),
         type_label: chunk.schema_type_name.clone(),
+        field_owner_module_id: chunk.field_owner_module_id,
+        schema_module_id: chunk.schema_module_id,
+        schema_type_ref: chunk.schema_type_ref.clone(),
+        parent_type_ref: parent_type_ref.cloned(),
         size: chunk.size,
         child_count,
         is_expanded,
@@ -94,13 +110,24 @@ fn flatten_chunk(
         return;
     }
 
+    let own_type_ref = chunk
+        .schema_module_id
+        .zip(chunk.schema_type_ref.clone());
+
     match &chunk.content {
         DynamicChunkContent::Children(children) => {
             for child in children {
                 if rows.len() >= max_rows {
                     break;
                 }
-                flatten_chunk(child, depth + 1, collapsed_paths, max_rows, rows);
+                flatten_chunk(
+                    child,
+                    depth + 1,
+                    own_type_ref.as_ref(),
+                    collapsed_paths,
+                    max_rows,
+                    rows,
+                );
             }
         }
         DynamicChunkContent::MiniChunks { mini_chunks, .. } => {
@@ -112,9 +139,14 @@ fn flatten_chunk(
                     tree_path: mc.tree_path.clone(),
                     depth: depth + 1,
                     is_mini_chunk: true,
+                    raw_id: mc.id as u32,
                     id_label: format!("mc {:02} (0x{:02X})", mc.id, mc.id),
                     field_name: mc.schema_field_name.clone(),
                     type_label: mc.schema_type_label.clone(),
+                    field_owner_module_id: mc.field_owner_module_id,
+                    schema_module_id: mc.schema_module_id,
+                    schema_type_ref: mc.schema_type_ref.clone(),
+                    parent_type_ref: own_type_ref.clone(),
                     size: mc.raw_bytes.len(),
                     child_count: 0,
                     is_expanded: false,
