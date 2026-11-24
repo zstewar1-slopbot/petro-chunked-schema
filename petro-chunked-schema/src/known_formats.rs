@@ -29,6 +29,33 @@ pub fn ala_animation() -> Schema {
     Schema::from_yaml_str(ALA_ANIMATION_YAML).expect("built-in ala_animation.yaml must be valid")
 }
 
+/// Returns the canonical built-in format name if `name` matches one of the built-in schemas
+/// (accepting both PascalCase and snake_case aliases, case-insensitively).
+pub fn canonical_name(name: &str) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case("AloModel") || name.eq_ignore_ascii_case("alo_model") {
+        Some("AloModel")
+    } else if name.eq_ignore_ascii_case("AloParticle") || name.eq_ignore_ascii_case("alo_particle")
+    {
+        Some("AloParticle")
+    } else if name.eq_ignore_ascii_case("AlaAnimation")
+        || name.eq_ignore_ascii_case("ala_animation")
+    {
+        Some("AlaAnimation")
+    } else {
+        None
+    }
+}
+
+/// Loads a built-in [`Schema`] by name or snake_case alias (case-insensitively).
+pub fn by_name(name: &str) -> Option<Schema> {
+    match canonical_name(name)? {
+        "AloModel" => Some(alo_model()),
+        "AloParticle" => Some(alo_particle()),
+        "AlaAnimation" => Some(ala_animation()),
+        _ => None,
+    }
+}
+
 /// Returns all built-in known [`Schema`] definitions.
 pub fn all() -> Vec<Schema> {
     vec![alo_model(), alo_particle(), ala_animation()]

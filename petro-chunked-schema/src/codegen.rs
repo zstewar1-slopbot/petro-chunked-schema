@@ -3,13 +3,16 @@
 
 use std::fmt::Write;
 
+use crate::error::CodegenError;
+use crate::resolve::ResolvedSchema;
 use crate::schema::{
     ByteBlockDef, Cardinality, ChunkContainerDef, ChunkEnumDef, ChunkFieldDef, ChunkFieldSource,
-    ChunkPayloadSpec, DataType, MiniChunkContainerDef, OrderMode, Schema, TypeDef,
+    ChunkPayloadSpec, DataType, MiniChunkContainerDef, OrderMode, TypeDef,
 };
 
-/// Generates a complete Rust module implementing `schema` with `petro-chunked-derive`.
-pub fn generate_rust_code(schema: &Schema) -> String {
+/// Generates a complete Rust module implementing `resolved` with `petro-chunked-derive`.
+pub fn generate_rust_code(resolved: &ResolvedSchema) -> Result<String, CodegenError> {
+    let schema = resolved.root_schema();
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -24,28 +27,26 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         "\nuse std::path::PathBuf;\nuse petro_chunked::byteblock::FromByteBlock;\nuse petro_chunked::wire_types::{{U8Bool, U32Bool, U32Usize, U32UsizeVec}};\nuse petro_chunked::{{ChunkErrorV2, ChunkStreamItem, ChunkStructure, MiniChunkStructure, iter_chunks}};\n"
     );
 
-    // Emit root struct
-    emit_chunk_container_struct(&mut out, &schema.name, &schema.root, false);
-    let _ = writeln!(
-        out,
-        "impl {} {{\n    pub fn parse(bytes: &[u8]) -> Result<Self, ChunkErrorV2> {{\n        iter_chunks(bytes).expect_struct()\n    }}\n}}\n",
-        schema.name
-    );
-
-    // Emit all named types
+    // Emit all named types in root schema
     for (type_name, typedef) in &schema.types {
         match typedef {
             TypeDef::ByteBlock(bb) => emit_byte_block_struct(&mut out, type_name, bb),
             TypeDef::MiniChunks(mc) => emit_mini_chunk_struct(&mut out, type_name, mc),
             TypeDef::Chunks(cc) => emit_chunk_container_struct(&mut out, type_name, cc, false),
-            TypeDef::ChunkStreamSeq(cc) => {
-                emit_chunk_container_struct(&mut out, type_name, cc, true)
+            TypeDef::ChunkStreamSeq(seq) => {
+                let cc = ChunkContainerDef {
+                    description: seq.description.clone(),
+                    mode: OrderMode::Sequence,
+                    ignore_unknown: false,
+                    fields: seq.fields.clone(),
+                };
+                emit_chunk_container_struct(&mut out, type_name, &cc, true);
             }
             TypeDef::ChunkEnum(ce) => emit_chunk_enum(&mut out, type_name, ce),
         }
     }
 
-    out
+    Ok(out)
 }
 
 fn emit_doc_comment(out: &mut String, indent: &str, desc: &Option<String>) {

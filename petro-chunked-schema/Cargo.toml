@@ -8,10 +8,16 @@ description = "YAML schema descriptor format, dynamic loader, and Rust codegen f
 [features]
 default = ["known-formats"]
 known-formats = []
+codegen = ["dep:prettyplease", "dep:proc-macro2", "dep:quote", "dep:syn"]
 
 [dependencies]
-anyhow.workspace = true
+indexmap.workspace = true
 petro-chunked.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
+
+prettyplease = { workspace = true, optional = true }
+proc-macro2 = { workspace = true, optional = true }
+quote = { workspace = true, optional = true }
+syn = { workspace = true, optional = true }

@@ -1,8 +1,12 @@
+#![cfg(feature = "known-formats")]
+
+#[cfg(feature = "codegen")]
 use petro_chunked_schema::codegen::generate_rust_code;
 use petro_chunked_schema::dynamic::{
     DynamicChunkContent, LoadOptions, inspect_bytes_at_offset, load_dynamic_file, validate_bytes,
 };
 use petro_chunked_schema::known_formats;
+use petro_chunked_schema::resolve::SchemaLoader;
 use petro_chunked_schema::schema::Schema;
 
 fn make_chunk(id: u32, is_container: bool, payload: &[u8]) -> Vec<u8> {
@@ -27,24 +31,23 @@ fn make_mini_chunk(id: u8, payload: &[u8]) -> Vec<u8> {
 
 #[test]
 fn test_known_formats_parse_and_roundtrip_yaml() {
-    for schema in [
-        known_formats::alo_model(),
-        known_formats::alo_particle(),
-        known_formats::ala_animation(),
-    ] {
+    for schema in known_formats::all() {
         let yaml = schema.to_yaml_string().unwrap();
         let reparsed = Schema::from_yaml_str(&yaml).unwrap();
         assert_eq!(schema, reparsed);
 
-        let rust_code = generate_rust_code(&schema);
-        assert!(rust_code.contains(&format!("pub struct {}", schema.name)));
-        assert!(rust_code.contains("ChunkStructure"));
+        #[cfg(feature = "codegen")]
+        {
+            let resolved = SchemaLoader::resolve(schema.clone(), None).unwrap();
+            let rust_code = generate_rust_code(&resolved).unwrap();
+            assert!(rust_code.contains("ChunkStructure"));
+        }
     }
 }
 
 #[test]
 fn test_dynamic_loader_and_byte_spans_on_synthetic_alo_and_ala() {
-    let ala_schema = known_formats::ala_animation();
+    let ala_schema = SchemaLoader::resolve(known_formats::ala_animation(), None).unwrap();
 
     // Build a minimal Format #1 .ala file (0x1000 -> 0x1001 header + 1 0x1002 bone)
     let mut header_mc = Vec::new();
