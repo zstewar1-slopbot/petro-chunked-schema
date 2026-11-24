@@ -1,96 +1,112 @@
-//! Top toolbar and status bar components.
+//! Top grouped command toolbar and built-in schema / status bar.
 
 use freya::prelude::*;
 use petro_chunked_schema::known_formats;
 
 use super::context::{ActiveModal, EditorState};
 use super::theme;
+use super::widgets::{ActionButton, ButtonStyle, GroupCaption, SegmentedChip, ToolbarDivider};
 
-/// Top application toolbar with file browser trigger, built-in schema presets, and modal tools.
+/// Grouped top command bar organizing file/archive asset triggers, schema management, and tools.
 #[component]
 pub fn Toolbar() -> Element {
     let mut state = use_context::<EditorState>();
     let dir_count = state.persisted.read().game_data_dirs.len();
-    let active_schema_name = state.schema.read().name.clone();
+    let active_modal = *state.active_modal.read();
 
     rsx! {
         rect {
             width: "fill",
             padding: "6 12",
             background: theme::BG_TOOLBAR,
+            border: "0 0 1 0 solid rgb(52, 57, 74)",
             direction: "horizontal",
             cross_align: "center",
-            spacing: "6",
+            spacing: "10",
 
             label {
                 font_size: "14",
                 font_weight: "bold",
                 color: theme::ACCENT_BLUE,
+                max_lines: "1",
                 "Petro Schema Editor"
             }
 
-            Button {
+            ToolbarDivider {}
+            GroupCaption { text: "ASSETS".to_owned() }
+
+            ActionButton {
+                label: "Open File / .meg...".to_owned(),
+                style: if active_modal == ActiveModal::FileBrowser {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
                 onpress: move |_| state.toggle_modal(ActiveModal::FileBrowser),
-                label { font_size: "12", "Files / .meg..." }
             }
 
-            label {
-                font_size: "11",
-                color: theme::TEXT_MUTED,
-                "Schemas:"
-            }
-
-            for &preset in known_formats::BUILTIN_NAMES {
-                {
-                    let is_active = active_schema_name == preset;
-                    rsx! {
-                        Button {
-                            onpress: move |_| state.load_builtin(preset),
-                            label {
-                                font_size: "12",
-                                font_weight: if is_active { "bold" } else { "normal" },
-                                color: if is_active { theme::ACCENT_BLUE } else { theme::TEXT_PRIMARY },
-                                "{preset}"
-                            }
-                        }
-                    }
-                }
-            }
-
-            Button {
-                onpress: move |_| state.start_blank_schema(),
-                label { font_size: "12", "+ Blank" }
-            }
-
-            Button {
-                onpress: move |_| state.toggle_modal(ActiveModal::YamlFile),
-                label { font_size: "12", "YAML..." }
-            }
-
-            Button {
+            ActionButton {
+                label: format!("GameData ({dir_count})"),
+                style: if active_modal == ActiveModal::GameDataDirs {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
                 onpress: move |_| state.toggle_modal(ActiveModal::GameDataDirs),
-                label { font_size: "12", "GameData ({dir_count})" }
             }
 
-            Button {
+            ToolbarDivider {}
+            GroupCaption { text: "SCHEMA".to_owned() }
+
+            ActionButton {
+                label: "YAML / URI...".to_owned(),
+                style: if active_modal == ActiveModal::YamlFile {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
+                onpress: move |_| state.toggle_modal(ActiveModal::YamlFile),
+            }
+
+            ActionButton {
+                label: "+ New Blank".to_owned(),
+                style: ButtonStyle::Secondary,
+                onpress: move |_| state.start_blank_schema(),
+            }
+
+            ToolbarDivider {}
+            GroupCaption { text: "TOOLS".to_owned() }
+
+            ActionButton {
+                label: "Validate All...".to_owned(),
+                style: if active_modal == ActiveModal::BatchValidate {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
                 onpress: move |_| state.toggle_modal(ActiveModal::BatchValidate),
-                label { font_size: "12", "Validate..." }
             }
 
-            Button {
+            ActionButton {
+                label: "Emit Rust...".to_owned(),
+                style: if active_modal == ActiveModal::RustCodegen {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
                 onpress: move |_| state.toggle_modal(ActiveModal::RustCodegen),
-                label { font_size: "12", "Emit Rust" }
             }
         }
     }
 }
 
-/// Single-line status bar displaying the open file, active schema, and latest operation result.
+/// Second top strip combining the built-in schema radio selector with active session context.
 #[component]
 pub fn StatusBar() -> Element {
-    let state = use_context::<EditorState>();
+    let mut state = use_context::<EditorState>();
     let persisted = state.persisted.read();
     let schema = state.schema.read();
+    let active_schema_name = schema.name.clone();
 
     let active_file_label = persisted
         .last_file
@@ -107,25 +123,58 @@ pub fn StatusBar() -> Element {
     rsx! {
         rect {
             width: "fill",
-            padding: "4 12",
+            content: "flex",
+            padding: "5 12",
             background: theme::BG_STATUS,
+            border: "0 0 1 0 solid rgb(52, 57, 74)",
             direction: "horizontal",
-            spacing: "16",
+            cross_align: "center",
+            spacing: "10",
 
-            label {
-                font_size: "12",
-                color: theme::ACCENT_ASCII,
-                "File: {active_file_label}"
+            GroupCaption { text: "BUILT-IN".to_owned() }
+
+            rect {
+                direction: "horizontal",
+                cross_align: "center",
+                spacing: "4",
+                for &preset in known_formats::BUILTIN_NAMES {
+                    SegmentedChip {
+                        key: "{preset}",
+                        label: preset.to_owned(),
+                        selected: active_schema_name == preset,
+                        compact: Some(true),
+                        onpress: move |_| state.load_builtin(preset),
+                    }
+                }
             }
-            label {
-                font_size: "12",
-                color: theme::ACCENT_BLUE,
-                "Schema: {schema.name} ({schema_ref_label}, {schema.types.len()} types)"
-            }
-            label {
-                font_size: "12",
-                color: theme::TEXT_PRIMARY,
-                "{state.status_msg.read()}"
+
+            ToolbarDivider {}
+
+            rect {
+                width: "flex(1)",
+                overflow: "clip",
+                direction: "horizontal",
+                cross_align: "center",
+                spacing: "14",
+
+                label {
+                    font_size: "12",
+                    color: theme::ACCENT_ASCII,
+                    max_lines: "1",
+                    "File: {active_file_label}"
+                }
+                label {
+                    font_size: "12",
+                    color: theme::ACCENT_BLUE,
+                    max_lines: "1",
+                    "Schema: {schema.name} ({schema_ref_label}, {schema.types.len()} types)"
+                }
+                label {
+                    font_size: "11",
+                    color: theme::TEXT_MUTED,
+                    max_lines: "1",
+                    "{state.status_msg.read()}"
+                }
             }
         }
     }

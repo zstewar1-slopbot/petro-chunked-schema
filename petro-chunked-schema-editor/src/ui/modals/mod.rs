@@ -11,6 +11,7 @@ use freya::prelude::*;
 
 use super::context::{ActiveModal, EditorState};
 use super::theme;
+use super::widgets::{ActionButton, ButtonStyle};
 
 use batch_validate::BatchValidateModal;
 use file_browser::FileBrowserModal;
@@ -44,6 +45,7 @@ pub fn ModalFrame(title: String, height: String, children: Element) -> Element {
             content: "flex",
             padding: "10 14",
             background: theme::BG_MODAL,
+            border: "0 0 1 0 solid rgb(52, 57, 74)",
             direction: "vertical",
             spacing: "8",
 
@@ -58,9 +60,11 @@ pub fn ModalFrame(title: String, height: String, children: Element) -> Element {
                     color: theme::ACCENT_BLUE,
                     "{title}"
                 }
-                Button {
+                ActionButton {
+                    label: "Close [X]".to_owned(),
+                    style: ButtonStyle::Secondary,
+                    compact: Some(true),
                     onpress: move |_| state.close_modal(),
-                    label { "Close [X]" }
                 }
             }
 

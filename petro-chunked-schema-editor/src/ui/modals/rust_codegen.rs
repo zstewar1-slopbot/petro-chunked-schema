@@ -7,6 +7,7 @@ use petro_chunked_schema::codegen::generate_rust_code;
 
 use crate::ui::context::EditorState;
 use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
 
 use super::ModalFrame;
 
@@ -32,12 +33,15 @@ pub fn RustCodegenModal() -> Element {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
-                Input {
+                StyledInput {
+                    width: Some("280".to_owned()),
                     value: save_path_input.read().clone(),
-                    placeholder: "output.rs",
+                    placeholder: Some("output.rs".to_owned()),
                     onchange: move |txt| save_path_input.set(txt),
                 }
-                Button {
+                ActionButton {
+                    label: "Save .rs File".to_owned(),
+                    style: ButtonStyle::Primary,
                     onpress: move |_| {
                         let path = PathBuf::from(save_path_input.read().trim());
                         let res = {
@@ -52,7 +56,6 @@ pub fn RustCodegenModal() -> Element {
                             Err(e) => state.set_status(format!("Codegen error: {e}")),
                         }
                     },
-                    label { "Save .rs File" }
                 }
             }
 
@@ -60,7 +63,9 @@ pub fn RustCodegenModal() -> Element {
                 width: "fill",
                 height: "flex(1)",
                 rect {
-                    padding: "8",
+                    width: "fill",
+                    padding: "10",
+                    corner_radius: "4",
                     background: theme::BG_INSET,
                     label {
                         font_size: "12",

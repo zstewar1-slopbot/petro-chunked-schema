@@ -166,6 +166,32 @@ pub enum ParentContainerRef {
     },
 }
 
+/// Summary row for an immediate child chunk or mini-chunk displayed in the center overview
+/// panel when a parent container chunk (or mini-chunk block) is selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildSummaryRow {
+    /// Zero-based index among the container's immediate children.
+    pub index: usize,
+    /// Unique tree path for clicking through to inspect this child.
+    pub tree_path: String,
+    /// Formatted ID label (`"0x0400"` for chunks, `"mc 01"` for mini-chunks).
+    pub id_label: String,
+    /// Structural kind summary (`"Container (N)"`, `"MiniChunks (N)"`, `"Data"`, or `"MiniChunk"`).
+    pub kind_label: String,
+    /// Assigned schema field name, if matched.
+    pub field_name: Option<String>,
+    /// Assigned schema type label, if matched.
+    pub type_label: Option<String>,
+    /// Child payload size in bytes.
+    pub size: usize,
+    /// Absolute file byte offset of the child's header.
+    pub header_offset: usize,
+    /// Compact preview string of any decoded leaf value.
+    pub value_summary: Option<String>,
+    /// `true` if validation errors exist on this child.
+    pub has_error: bool,
+}
+
 /// Resolved details about the currently selected chunk or mini-chunk in the UI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedNodeDetails {
@@ -197,6 +223,8 @@ pub struct SelectedNodeDetails {
     pub decoded: Option<DynamicValue>,
     /// Errors recorded specifically on this node.
     pub errors: Vec<String>,
+    /// Immediate child chunks or mini-chunks when inspecting a container or mini-chunk block.
+    pub direct_children: Vec<ChildSummaryRow>,
     /// Container owning this node in the schema hierarchy.
     pub parent_container: ParentContainerRef,
     /// `(SchemaId, type_name)` when this payload maps to a named `TypeDef::ByteBlock`.
@@ -322,6 +350,7 @@ fn build_mini_chunk_details(
         spans: mc.spans.clone(),
         decoded: mc.decoded.clone(),
         errors: mc.errors.clone(),
+        direct_children: Vec::new(),
         parent_container,
         active_byte_block,
     }
@@ -379,16 +408,72 @@ fn build_chunk_details(
         }
     };
 
-    let (raw_bytes, spans, decoded) = match &chunk.content {
-        DynamicChunkContent::Children(_) => (Vec::new(), Vec::new(), None),
-        DynamicChunkContent::MiniChunks { raw_bytes, .. } => {
-            (raw_bytes.clone(), Vec::new(), None)
+    let (raw_bytes, spans, decoded, direct_children) = match &chunk.content {
+        DynamicChunkContent::Children(children) => {
+            let summaries = children
+                .iter()
+                .enumerate()
+                .map(|(index, c)| {
+                    let (kind_label, value_summary) = match &c.content {
+                        DynamicChunkContent::Children(ch) => {
+                            (format!("Container ({})", ch.len()), None)
+                        }
+                        DynamicChunkContent::MiniChunks { mini_chunks, .. } => {
+                            (format!("MiniChunks ({})", mini_chunks.len()), None)
+                        }
+                        DynamicChunkContent::Data { decoded, .. } => (
+                            "Data".to_owned(),
+                            decoded.as_ref().map(DynamicValue::short_summary),
+                        ),
+                    };
+                    ChildSummaryRow {
+                        index,
+                        tree_path: c.tree_path.clone(),
+                        id_label: format!("0x{:04X}", c.id),
+                        kind_label,
+                        field_name: c.schema_field_name.clone(),
+                        type_label: c.schema_type_name.clone(),
+                        size: c.size,
+                        header_offset: c.header_offset,
+                        value_summary,
+                        has_error: !c.errors.is_empty(),
+                    }
+                })
+                .collect();
+            (Vec::new(), Vec::new(), None, summaries)
+        }
+        DynamicChunkContent::MiniChunks {
+            raw_bytes,
+            mini_chunks,
+        } => {
+            let summaries = mini_chunks
+                .iter()
+                .enumerate()
+                .map(|(index, mc)| ChildSummaryRow {
+                    index,
+                    tree_path: mc.tree_path.clone(),
+                    id_label: format!("mc {:02X}", mc.id),
+                    kind_label: "MiniChunk".to_owned(),
+                    field_name: mc.schema_field_name.clone(),
+                    type_label: mc.schema_type_label.clone(),
+                    size: mc.raw_bytes.len(),
+                    header_offset: mc.header_offset,
+                    value_summary: mc.decoded.as_ref().map(DynamicValue::short_summary),
+                    has_error: !mc.errors.is_empty(),
+                })
+                .collect();
+            (raw_bytes.clone(), Vec::new(), None, summaries)
         }
         DynamicChunkContent::Data {
             raw_bytes,
             decoded,
             spans,
-        } => (raw_bytes.clone(), spans.clone(), decoded.clone()),
+        } => (
+            raw_bytes.clone(),
+            spans.clone(),
+            decoded.clone(),
+            Vec::new(),
+        ),
     };
 
     let active_byte_block = resolve_byte_block_ref(
@@ -412,6 +497,7 @@ fn build_chunk_details(
         spans,
         decoded,
         errors: chunk.errors.clone(),
+        direct_children,
         parent_container,
         active_byte_block,
     }
@@ -1001,5 +1087,28 @@ mod tests {
             Some(SchemaId::ROOT)
         );
         assert!(node.active_byte_block.is_some());
+    }
+
+    #[test]
+    fn test_container_direct_children_overview() {
+        let resolved = SchemaLoader::load(&SchemaRef::Builtin("Alo".to_owned())).unwrap();
+        let mut skel_hdr = Vec::from(0u32.to_le_bytes());
+        skel_hdr.extend_from_slice(&[0u8; 124]);
+        let skel = make_chunk(0x0201, false, &skel_hdr);
+        let model_bytes = make_chunk(0x0200, true, &skel);
+
+        let df = load_dynamic_file(&model_bytes, Some(&resolved), &LoadOptions::default()).unwrap();
+        let parent = resolve_selected_node(&df, &resolved, "0").unwrap();
+        assert!(parent.is_container);
+        assert_eq!(parent.direct_children.len(), 1);
+        let child = &parent.direct_children[0];
+        assert_eq!(child.index, 0);
+        assert_eq!(child.tree_path, "0/0");
+        assert_eq!(child.id_label, "0x0201");
+        assert_eq!(child.kind_label, "Data");
+        assert_eq!(child.field_name.as_deref(), Some("header"));
+        assert_eq!(child.type_label.as_deref(), Some("SkeletonHeader"));
+        assert_eq!(child.size, 128);
+        assert!(!child.has_error);
     }
 }

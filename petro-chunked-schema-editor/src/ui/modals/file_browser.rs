@@ -8,6 +8,7 @@ use crate::gamedata::discover_files;
 use crate::state::FileSource;
 use crate::ui::context::EditorState;
 use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle, SegmentedChip, StyledInput};
 
 use super::ModalFrame;
 
@@ -40,6 +41,8 @@ pub fn FileBrowserModal() -> Element {
         discovered_files.set(discover_files(&dirs, ext_opt, query, 150));
     };
 
+    let active_ext = ext_filter.read().clone();
+
     rsx! {
         ModalFrame {
             title: "Open File from Disk or Petroglyph .meg Archive".to_owned(),
@@ -49,12 +52,15 @@ pub fn FileBrowserModal() -> Element {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
-                Input {
+                StyledInput {
+                    width: Some("360".to_owned()),
                     value: disk_file_input.read().clone(),
-                    placeholder: "/path/to/file.alo or .ala",
+                    placeholder: Some("/path/to/file.alo or .ala".to_owned()),
                     onchange: move |txt| disk_file_input.set(txt),
                 }
-                Button {
+                ActionButton {
+                    label: "Open Disk Path".to_owned(),
+                    style: ButtonStyle::Secondary,
                     onpress: move |_| {
                         let p = PathBuf::from(disk_file_input.read().trim());
                         if !p.as_os_str().is_empty() {
@@ -62,7 +68,6 @@ pub fn FileBrowserModal() -> Element {
                             state.close_modal();
                         }
                     },
-                    label { "Open Disk Path" }
                 }
             }
 
@@ -70,64 +75,80 @@ pub fn FileBrowserModal() -> Element {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
-                label { font_size: "12", "Filter GameData & .meg Archives:" }
-                Input {
+                label { font_size: "12", color: theme::TEXT_MUTED, "Filter GameData & .meg:" }
+                StyledInput {
+                    width: Some("240".to_owned()),
                     value: search_query.read().clone(),
-                    placeholder: "Search filename substring...",
+                    placeholder: Some("Search filename substring...".to_owned()),
                     onchange: move |txt| search_query.set(txt),
                 }
                 for ext_choice in ["alo", "ala", "ted", "all"] {
-                    Button {
+                    SegmentedChip {
+                        key: "{ext_choice}",
+                        label: format!(".{ext_choice}"),
+                        selected: active_ext == ext_choice,
+                        compact: Some(true),
                         onpress: move |_| {
                             ext_filter.set(ext_choice.to_owned());
                             let q = search_query.read().clone();
                             run_search(ext_choice, &q);
                         },
-                        label { ".{ext_choice}" }
                     }
                 }
-                Button {
+                ActionButton {
+                    label: "Search".to_owned(),
+                    style: ButtonStyle::Primary,
                     onpress: move |_| {
                         let ext = ext_filter.read().clone();
                         let q = search_query.read().clone();
                         run_search(&ext, &q);
                     },
-                    label { "Search" }
                 }
             }
 
             ScrollView {
                 width: "fill",
                 height: "flex(1)",
-                if discovered_files.read().is_empty() {
-                    label {
-                        font_size: "12",
-                        color: theme::TEXT_MUTED,
-                        "No matching files found. Configure GameData directories under 'GameData Dirs...' to browse loose files and .meg archives."
+                rect {
+                    width: "fill",
+                    direction: "vertical",
+                    spacing: "3",
+
+                    if discovered_files.read().is_empty() {
+                        label {
+                            font_size: "12",
+                            color: theme::TEXT_MUTED,
+                            "No matching files found. Configure GameData directories under 'GameData (N)' to browse loose files and .meg archives."
+                        }
                     }
-                }
-                for item in discovered_files.read().iter() {
-                    {
-                        let src = item.source.clone();
-                        let disp = item.display_name.clone();
-                        let sz = item.size;
-                        rsx! {
-                            rect {
-                                width: "fill",
-                                padding: "3 6",
-                                direction: "horizontal",
-                                spacing: "10",
-                                cross_align: "center",
-                                Button {
-                                    onpress: move |_| {
-                                        state.open_file(src.clone());
-                                        state.close_modal();
-                                    },
-                                    label { "Load" }
-                                }
-                                label {
-                                    font_size: "12",
-                                    "{disp}  ({sz} bytes)"
+                    for item in discovered_files.read().iter() {
+                        {
+                            let src = item.source.clone();
+                            let disp = item.display_name.clone();
+                            let sz = item.size;
+                            rsx! {
+                                rect {
+                                    width: "fill",
+                                    padding: "4 8",
+                                    corner_radius: "4",
+                                    background: theme::BG_INSET,
+                                    direction: "horizontal",
+                                    spacing: "10",
+                                    cross_align: "center",
+                                    ActionButton {
+                                        label: "Load".to_owned(),
+                                        style: ButtonStyle::Secondary,
+                                        compact: Some(true),
+                                        onpress: move |_| {
+                                            state.open_file(src.clone());
+                                            state.close_modal();
+                                        },
+                                    }
+                                    label {
+                                        font_size: "12",
+                                        color: theme::TEXT_PRIMARY,
+                                        "{disp}  ({sz} bytes)"
+                                    }
                                 }
                             }
                         }

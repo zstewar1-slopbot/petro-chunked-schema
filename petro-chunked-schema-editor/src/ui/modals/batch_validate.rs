@@ -5,6 +5,7 @@ use freya::prelude::*;
 use crate::gamedata::{BatchValidationReport, run_batch_validation};
 use crate::ui::context::EditorState;
 use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
 
 use super::ModalFrame;
 
@@ -27,13 +28,16 @@ pub fn BatchValidateModal() -> Element {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
-                label { font_size: "12", "Extension:" }
-                Input {
+                label { font_size: "12", color: theme::TEXT_MUTED, "Extension:" }
+                StyledInput {
+                    width: Some("100".to_owned()),
                     value: ext_input.read().clone(),
-                    placeholder: "alo",
+                    placeholder: Some("alo".to_owned()),
                     onchange: move |txt| ext_input.set(txt),
                 }
-                Button {
+                ActionButton {
+                    label: "Run Validate Now".to_owned(),
+                    style: ButtonStyle::Primary,
                     onpress: move |_| {
                         let ext = ext_input.read().trim().to_owned();
                         let dirs = {
@@ -50,46 +54,57 @@ pub fn BatchValidateModal() -> Element {
                         ));
                         report.set(Some(rep));
                     },
-                    label { "Run Validate Now" }
                 }
             }
 
             if let Some(rep) = report.read().as_ref() {
                 label {
                     font_size: "12",
+                    font_weight: "bold",
                     color: if rep.failed_count == 0 { theme::ACCENT_GREEN } else { theme::ACCENT_RED },
                     "Schema `{rep.schema_name}` on `.{rep.extension}` -> Checked: {rep.total_checked} | Passed: {rep.passed_count} | Failed: {rep.failed_count} | Skipped: {rep.skipped_count}"
                 }
                 ScrollView {
                     width: "fill",
                     height: "flex(1)",
-                    for fail in &rep.failures {
-                        {
-                            let f_src = fail.source.clone();
-                            let f_disp = fail.display_name.clone();
-                            let first_diag = fail
-                                .diagnostics
-                                .first()
-                                .map(|d| format!("[{} @ 0x{:X}] {}", d.tree_path, d.file_offset, d.message))
-                                .unwrap_or_default();
-                            let diag_len = fail.diagnostics.len();
-                            rsx! {
-                                rect {
-                                    padding: "3 6",
-                                    direction: "horizontal",
-                                    spacing: "8",
-                                    cross_align: "center",
-                                    Button {
-                                        onpress: move |_| {
-                                            state.open_file(f_src.clone());
-                                            state.close_modal();
-                                        },
-                                        label { "Open in Editor" }
-                                    }
-                                    label {
-                                        font_size: "12",
-                                        color: theme::ACCENT_RED,
-                                        "{f_disp} ({diag_len} error(s)) — {first_diag}"
+                    rect {
+                        width: "fill",
+                        direction: "vertical",
+                        spacing: "3",
+
+                        for fail in &rep.failures {
+                            {
+                                let f_src = fail.source.clone();
+                                let f_disp = fail.display_name.clone();
+                                let first_diag = fail
+                                    .diagnostics
+                                    .first()
+                                    .map(|d| format!("[{} @ 0x{:X}] {}", d.tree_path, d.file_offset, d.message))
+                                    .unwrap_or_default();
+                                let diag_len = fail.diagnostics.len();
+                                rsx! {
+                                    rect {
+                                        width: "fill",
+                                        padding: "4 8",
+                                        corner_radius: "4",
+                                        background: theme::BG_INSET,
+                                        direction: "horizontal",
+                                        spacing: "8",
+                                        cross_align: "center",
+                                        ActionButton {
+                                            label: "Open in Editor".to_owned(),
+                                            style: ButtonStyle::Secondary,
+                                            compact: Some(true),
+                                            onpress: move |_| {
+                                                state.open_file(f_src.clone());
+                                                state.close_modal();
+                                            },
+                                        }
+                                        label {
+                                            font_size: "12",
+                                            color: theme::ACCENT_RED,
+                                            "{f_disp} ({diag_len} error(s)) — {first_diag}"
+                                        }
                                     }
                                 }
                             }

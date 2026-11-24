@@ -4,6 +4,7 @@ pub mod context;
 pub mod modals;
 pub mod theme;
 pub mod toolbar;
+pub mod widgets;
 pub mod workspace;
 
 use freya::prelude::*;
@@ -25,6 +26,7 @@ pub fn app() -> Element {
             content: "flex",
             background: theme::BG_ROOT,
             color: theme::TEXT_PRIMARY,
+            font_size: "12",
             direction: "vertical",
 
             Toolbar {}

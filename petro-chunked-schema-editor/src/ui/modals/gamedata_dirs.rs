@@ -6,6 +6,8 @@ use freya::prelude::*;
 
 use crate::gamedata::detect_default_gamedata_dirs;
 use crate::ui::context::EditorState;
+use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
 
 use super::ModalFrame;
 
@@ -26,12 +28,15 @@ pub fn GameDataDirsModal() -> Element {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
-                Input {
+                StyledInput {
+                    width: Some("360".to_owned()),
                     value: new_dir_input.read().clone(),
-                    placeholder: "/path/to/GameData/Data",
+                    placeholder: Some("/path/to/GameData/Data".to_owned()),
                     onchange: move |txt| new_dir_input.set(txt),
                 }
-                Button {
+                ActionButton {
+                    label: "+ Add Directory".to_owned(),
+                    style: ButtonStyle::Primary,
                     onpress: move |_| {
                         let raw = new_dir_input.read().trim().to_owned();
                         if !raw.is_empty() {
@@ -47,9 +52,10 @@ pub fn GameDataDirsModal() -> Element {
                             state.set_status(format!("Added GameData directory `{raw}`"));
                         }
                     },
-                    label { "+ Add Directory" }
                 }
-                Button {
+                ActionButton {
+                    label: "+ Auto-Detect Local EAW/FoC Data".to_owned(),
+                    style: ButtonStyle::Secondary,
                     onpress: move |_| {
                         let detected = detect_default_gamedata_dirs();
                         let mut added = 0usize;
@@ -65,33 +71,42 @@ pub fn GameDataDirsModal() -> Element {
                         }
                         state.set_status(format!("Auto-detected {added} new GameData directory(ies)"));
                     },
-                    label { "+ Auto-Detect Local EAW/FoC Data" }
                 }
             }
 
             ScrollView {
                 width: "fill",
                 height: "flex(1)",
-                for (idx, dir) in dirs.iter().enumerate() {
-                    {
-                        let dir_str = dir.display().to_string();
-                        rsx! {
-                            rect {
-                                padding: "4 6",
-                                direction: "horizontal",
-                                spacing: "10",
-                                cross_align: "center",
-                                Button {
-                                    onpress: move |_| {
-                                        let mut p = state.persisted.write();
-                                        if idx < p.game_data_dirs.len() {
-                                            p.game_data_dirs.remove(idx);
-                                            p.save();
-                                        }
-                                    },
-                                    label { "Remove" }
+                rect {
+                    width: "fill",
+                    direction: "vertical",
+                    spacing: "3",
+                    for (idx, dir) in dirs.iter().enumerate() {
+                        {
+                            let dir_str = dir.display().to_string();
+                            rsx! {
+                                rect {
+                                    width: "fill",
+                                    padding: "4 8",
+                                    corner_radius: "4",
+                                    background: theme::BG_INSET,
+                                    direction: "horizontal",
+                                    spacing: "10",
+                                    cross_align: "center",
+                                    ActionButton {
+                                        label: "Remove".to_owned(),
+                                        style: ButtonStyle::Danger,
+                                        compact: Some(true),
+                                        onpress: move |_| {
+                                            let mut p = state.persisted.write();
+                                            if idx < p.game_data_dirs.len() {
+                                                p.game_data_dirs.remove(idx);
+                                                p.save();
+                                            }
+                                        },
+                                    }
+                                    label { font_size: "12", color: theme::TEXT_PRIMARY, "{dir_str}" }
                                 }
-                                label { font_size: "12", "{dir_str}" }
                             }
                         }
                     }

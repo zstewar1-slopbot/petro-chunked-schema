@@ -8,6 +8,7 @@ use petro_chunked_schema::source::SchemaRef;
 use crate::gamedata::save_schema_to_path;
 use crate::ui::context::EditorState;
 use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
 
 use super::ModalFrame;
 
@@ -41,12 +42,15 @@ pub fn YamlSchemaModal() -> Element {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
-                Input {
+                StyledInput {
+                    width: Some("340".to_owned()),
                     value: ref_input.read().clone(),
-                    placeholder: "builtin:Alo or path/to/schema.yaml",
+                    placeholder: Some("builtin:Alo or path/to/schema.yaml".to_owned()),
                     onchange: move |txt| ref_input.set(txt),
                 }
-                Button {
+                ActionButton {
+                    label: "Load Ref / YAML".to_owned(),
+                    style: ButtonStyle::Primary,
                     onpress: move |_| {
                         let raw = ref_input.read().trim().to_owned();
                         match SchemaRef::parse(&raw) {
@@ -54,9 +58,10 @@ pub fn YamlSchemaModal() -> Element {
                             Err(e) => state.set_status(format!("Invalid schema reference: {e}")),
                         }
                     },
-                    label { "Load Ref / YAML" }
                 }
-                Button {
+                ActionButton {
+                    label: "Save YAML File".to_owned(),
+                    style: ButtonStyle::Secondary,
                     onpress: move |_| {
                         let raw = ref_input.read().trim().to_owned();
                         let path = match SchemaRef::parse(&raw) {
@@ -82,7 +87,6 @@ pub fn YamlSchemaModal() -> Element {
                             Err(e) => state.set_status(format!("Error saving YAML schema: {e}")),
                         }
                     },
-                    label { "Save YAML File" }
                 }
             }
 
@@ -90,11 +94,14 @@ pub fn YamlSchemaModal() -> Element {
                 width: "fill",
                 height: "flex(1)",
                 rect {
-                    padding: "8",
+                    width: "fill",
+                    padding: "10",
+                    corner_radius: "4",
                     background: theme::BG_INSET,
                     label {
                         font_size: "12",
                         font_family: "monospace",
+                        color: theme::TEXT_PRIMARY,
                         "{yaml_text}"
                     }
                 }

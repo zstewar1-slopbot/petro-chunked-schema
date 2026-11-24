@@ -6,6 +6,7 @@ use petro_chunked_schema::dynamic::DynamicFile;
 use crate::editor_ops::{FlatTreeRow, build_flat_tree};
 use crate::ui::context::EditorState;
 use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle};
 
 /// Left-hand pane displaying the hierarchical chunk/mini-chunk tree and file schema diagnostics.
 #[component]
@@ -22,7 +23,7 @@ pub fn ChunkTreePane() -> Element {
 
     rsx! {
         rect {
-            width: "340",
+            width: "355",
             height: "fill",
             content: "flex",
             padding: "8",
@@ -33,17 +34,19 @@ pub fn ChunkTreePane() -> Element {
             rect {
                 width: "fill",
                 direction: "horizontal",
-                spacing: "6",
+                spacing: "8",
                 cross_align: "center",
                 label {
                     font_size: "13",
                     font_weight: "bold",
                     color: theme::ACCENT_BLUE,
-                    "Chunk & Mini-Chunk Tree ({flat_tree.len()})"
+                    "Chunk Tree ({flat_tree.len()})"
                 }
-                Button {
+                ActionButton {
+                    label: "Expand All".to_owned(),
+                    style: ButtonStyle::Secondary,
+                    compact: Some(true),
                     onpress: move |_| state.expand_all(),
-                    label { "Expand All" }
                 }
             }
 
@@ -172,17 +175,14 @@ fn ChunkTreeRow(row: FlatTreeRow, is_selected: bool) -> Element {
                     font_size: "11",
                     font_family: "monospace",
                     color: "{id_color}",
+                    max_lines: "1",
                     "{id_lbl}"
                 }
                 label {
                     font_size: "11",
                     color: "{name_color}",
-                    "{name_str}{type_suffix}"
-                }
-                label {
-                    font_size: "10",
-                    color: theme::TEXT_MUTED,
-                    "({sz}B)"
+                    max_lines: "1",
+                    "{name_str}{type_suffix} ({sz}B)"
                 }
             }
         }

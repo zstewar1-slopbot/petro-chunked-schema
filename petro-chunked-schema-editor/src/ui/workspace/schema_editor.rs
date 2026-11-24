@@ -1,5 +1,6 @@
 //! Right pane: interactive schema editing cards for parent containers, chunk/mini-chunk fields,
-//! and `ByteBlock` struct layouts.
+//! and `ByteBlock` struct layouts using normalized typography, radio-style selector chips, and
+//! context-aware wire-format controls.
 
 use freya::prelude::*;
 use petro_chunked_schema::resolve::SchemaId;
@@ -15,6 +16,42 @@ use crate::editor_ops::{
 };
 use crate::ui::context::EditorState;
 use crate::ui::theme;
+use crate::ui::widgets::{ActionButton, ButtonStyle, SegmentedChip, StyledInput};
+
+/// Returns the wire formats compatible with a parsed `DataType` string, or `&[]` when no explicit
+/// wire-format adapter applies to that type.
+pub fn compatible_wire_formats(ty_str: &str) -> &'static [(WireFormat, &'static str)] {
+    match DataType::parse_str(ty_str.trim()) {
+        Ok(DataType::Bool) => &[
+            (WireFormat::U8Bool, "U8Bool (1B)"),
+            (WireFormat::U32Bool, "U32Bool (4B)"),
+        ],
+        Ok(DataType::Usize) => &[(WireFormat::U32Usize, "U32Usize (4B)")],
+        Ok(DataType::List(inner)) if *inner == DataType::Usize => {
+            &[(WireFormat::U32UsizeVec, "U32UsizeVec")]
+        }
+        _ => &[],
+    }
+}
+
+/// Normalizes a candidate wire-format selection for `ty_str`, clearing incompatible formats and
+/// substituting the type's default adapter when an explicit adapter is required.
+pub fn normalize_wire_format_for_type(
+    ty_str: &str,
+    selected: Option<WireFormat>,
+) -> Option<WireFormat> {
+    let opts = compatible_wire_formats(ty_str);
+    if opts.is_empty() {
+        return None;
+    }
+    match selected {
+        Some(wf) if opts.iter().any(|(cand, _)| *cand == wf) => Some(wf),
+        _ => DataType::parse_str(ty_str.trim())
+            .ok()
+            .and_then(|dt| dt.default_wire_format())
+            .or_else(|| opts.first().map(|(wf, _)| *wf)),
+    }
+}
 
 /// Right-hand pane hosting interactive schema editing controls for the selected chunk or
 /// mini-chunk.
@@ -25,7 +62,7 @@ pub fn SchemaEditorPane(node: Option<SelectedNodeDetails>) -> Element {
             width: "390",
             height: "fill",
             content: "flex",
-            padding: "8 10",
+            padding: "10",
             background: theme::BG_PANE_RIGHT,
             direction: "vertical",
             spacing: "10",
@@ -102,58 +139,110 @@ fn ContainerSettingsCard(parent_ref: ParentContainerRef) -> Element {
     rsx! {
         rect {
             width: "fill",
-            padding: "8",
+            padding: "10",
+            corner_radius: "4",
             background: theme::BG_CARD,
             direction: "vertical",
-            spacing: "6",
+            spacing: "8",
 
             label {
                 font_size: "12",
                 font_weight: "bold",
                 color: theme::ACCENT_BLUE,
-                "1. Parent Container Relationship"
+                "1. Parent Container"
             }
 
             if let Some((p_title, p_mode, p_ignore)) = editable_summary {
                 {
-                    let p_ref_mode = parent_ref.clone();
-                    let p_ref_ign = parent_ref.clone();
+                    let p_ref_map = parent_ref.clone();
+                    let p_ref_seq = parent_ref.clone();
+                    let p_ref_strict = parent_ref.clone();
+                    let p_ref_ignore = parent_ref.clone();
                     rsx! {
-                        label { font_size: "11", "Container: {p_title}" }
+                        label {
+                            font_size: "12",
+                            color: theme::TEXT_PRIMARY,
+                            "{p_title}"
+                        }
                         rect {
+                            width: "fill",
                             direction: "horizontal",
-                            spacing: "6",
-                            Button {
-                                onpress: move |_| {
-                                    let next_mode = if p_mode == OrderMode::Map {
-                                        OrderMode::Sequence
-                                    } else {
-                                        OrderMode::Map
-                                    };
-                                    let target_ref = p_ref_mode.clone();
-                                    state.mutate_schema(
-                                        format!("Set container ordering mode to {next_mode:?}"),
-                                        move |s, _| {
-                                            set_container_mode(s, &target_ref, next_mode);
-                                            Ok(())
-                                        },
-                                    );
-                                },
-                                label { font_size: "11", "Order Mode: {p_mode:?} (Toggle)" }
+                            spacing: "8",
+                            cross_align: "center",
+                            label {
+                                width: "110",
+                                font_size: "12",
+                                color: theme::TEXT_MUTED,
+                                "Order Mode"
                             }
-                            Button {
+                            SegmentedChip {
+                                label: "Map".to_owned(),
+                                selected: p_mode == OrderMode::Map,
                                 onpress: move |_| {
-                                    let next_ign = !p_ignore;
-                                    let target_ref = p_ref_ign.clone();
+                                    let target_ref = p_ref_map.clone();
                                     state.mutate_schema(
-                                        format!("Set ignore_unknown = {next_ign}"),
+                                        "Set container ordering mode to Map".to_owned(),
                                         move |s, _| {
-                                            set_container_ignore_unknown(s, &target_ref, next_ign);
+                                            set_container_mode(s, &target_ref, OrderMode::Map);
                                             Ok(())
                                         },
                                     );
                                 },
-                                label { font_size: "11", "Ignore Unknown: {p_ignore}" }
+                            }
+                            SegmentedChip {
+                                label: "Sequence".to_owned(),
+                                selected: p_mode == OrderMode::Sequence,
+                                onpress: move |_| {
+                                    let target_ref = p_ref_seq.clone();
+                                    state.mutate_schema(
+                                        "Set container ordering mode to Sequence".to_owned(),
+                                        move |s, _| {
+                                            set_container_mode(s, &target_ref, OrderMode::Sequence);
+                                            Ok(())
+                                        },
+                                    );
+                                },
+                            }
+                        }
+
+                        rect {
+                            width: "fill",
+                            direction: "horizontal",
+                            spacing: "8",
+                            cross_align: "center",
+                            label {
+                                width: "110",
+                                font_size: "12",
+                                color: theme::TEXT_MUTED,
+                                "Unknown Chunks"
+                            }
+                            SegmentedChip {
+                                label: "Strict".to_owned(),
+                                selected: !p_ignore,
+                                onpress: move |_| {
+                                    let target_ref = p_ref_strict.clone();
+                                    state.mutate_schema(
+                                        "Set ignore_unknown = false".to_owned(),
+                                        move |s, _| {
+                                            set_container_ignore_unknown(s, &target_ref, false);
+                                            Ok(())
+                                        },
+                                    );
+                                },
+                            }
+                            SegmentedChip {
+                                label: "Ignore".to_owned(),
+                                selected: p_ignore,
+                                onpress: move |_| {
+                                    let target_ref = p_ref_ignore.clone();
+                                    state.mutate_schema(
+                                        "Set ignore_unknown = true".to_owned(),
+                                        move |s, _| {
+                                            set_container_ignore_unknown(s, &target_ref, true);
+                                            Ok(())
+                                        },
+                                    );
+                                },
                             }
                         }
                     }
@@ -164,37 +253,41 @@ fn ContainerSettingsCard(parent_ref: ParentContainerRef) -> Element {
                         let source_opt = source.clone();
                         rsx! {
                             label {
-                                font_size: "11",
+                                font_size: "12",
                                 color: theme::ACCENT_AMBER,
-                                "Defined in imported schema `{alias}` (`{type_name}`), which is read-only from the current schema."
+                                "Defined in imported schema `{alias}` (`{type_name}`), which is read-only from this file."
                             }
                             if let Some(src_ref) = source_opt {
-                                Button {
-                                    onpress: move |_| state.load_schema_ref(src_ref.clone()),
-                                    label { font_size: "11", "Open Imported Schema ({alias})" }
+                                rect {
+                                    direction: "horizontal",
+                                    ActionButton {
+                                        label: format!("Open `{alias}` Schema"),
+                                        style: ButtonStyle::Secondary,
+                                        onpress: move |_| state.load_schema_ref(src_ref.clone()),
+                                    }
                                 }
                             }
                         }
                     }
                     ParentContainerRef::ChunkEnumType { type_name } => rsx! {
                         label {
-                            font_size: "11",
+                            font_size: "12",
                             color: theme::ACCENT_AMBER,
                             "Dispatched by `chunk_enum` `{type_name}` (edit variants in YAML)."
                         }
                     },
                     ParentContainerRef::ChunksType { type_name } => rsx! {
                         label {
-                            font_size: "11",
+                            font_size: "12",
                             color: theme::TEXT_MUTED,
                             "Stream sequence `{type_name}` (strict field declaration order)."
                         }
                     },
                     _ => rsx! {
                         label {
-                            font_size: "11",
+                            font_size: "12",
                             color: theme::ACCENT_AMBER,
-                            "Parent chunk has no container type assigned yet. Select the parent chunk first and assign it a `Children` or `MiniChunks` container."
+                            "Parent chunk has no container type assigned yet. Assign a `Children` or `MiniChunks` container to its parent first."
                         }
                     },
                 }
@@ -367,13 +460,22 @@ fn FieldAssignmentCard(node: SelectedNodeDetails) -> Element {
     let parent_ref_save = parent_ref.clone();
     let parent_ref_del = parent_ref;
 
+    let cur_card = edit_cardinality.read().clone();
+    let cur_pkind = edit_chunk_payload_kind.read().clone();
+    let cur_ty_str = edit_payload_type_str.read().clone();
+    let trimmed_ty = cur_ty_str.trim().to_owned();
+    let wf_opts = compatible_wire_formats(&cur_ty_str);
+    let active_wf = normalize_wire_format_for_type(&cur_ty_str, *edit_wire_format.read());
+    let is_data_payload = is_mc || cur_pkind == "data";
+
     rsx! {
         rect {
             width: "fill",
-            padding: "8",
+            padding: "10",
+            corner_radius: "4",
             background: theme::BG_CARD,
             direction: "vertical",
-            spacing: "6",
+            spacing: "8",
 
             label {
                 font_size: "12",
@@ -386,130 +488,170 @@ fn FieldAssignmentCard(node: SelectedNodeDetails) -> Element {
                 }
             }
 
-            label { font_size: "11", "Field Name:" }
-            Input {
+            label { font_size: "12", color: theme::TEXT_MUTED, "Field Name" }
+            StyledInput {
                 value: edit_field_name.read().clone(),
-                placeholder: "field_name",
+                placeholder: Some("field_name".to_owned()),
                 onchange: move |txt| edit_field_name.set(txt),
             }
 
-            label {
-                font_size: "11",
-                "Cardinality (currently: {edit_cardinality.read():?}):"
-            }
+            label { font_size: "12", color: theme::TEXT_MUTED, "Cardinality" }
             rect {
                 direction: "horizontal",
                 spacing: "4",
-                Button {
+                SegmentedChip {
+                    label: "Required".to_owned(),
+                    selected: cur_card == Cardinality::Required,
+                    compact: Some(true),
                     onpress: move |_| edit_cardinality.set(Cardinality::Required),
-                    label { font_size: "11", "Required" }
                 }
-                Button {
+                SegmentedChip {
+                    label: "Optional".to_owned(),
+                    selected: cur_card == Cardinality::Optional,
+                    compact: Some(true),
                     onpress: move |_| edit_cardinality.set(Cardinality::Optional),
-                    label { font_size: "11", "Optional" }
                 }
-                Button {
+                SegmentedChip {
+                    label: "Repeated".to_owned(),
+                    selected: cur_card == Cardinality::Repeated,
+                    compact: Some(true),
                     onpress: move |_| edit_cardinality.set(Cardinality::Repeated),
-                    label { font_size: "11", "Repeated" }
                 }
-                Button {
+                SegmentedChip {
+                    label: "Default".to_owned(),
+                    selected: cur_card == Cardinality::Default,
+                    compact: Some(true),
                     onpress: move |_| edit_cardinality.set(Cardinality::Default),
-                    label { font_size: "11", "Default" }
                 }
             }
 
             if !is_mc {
-                label {
-                    font_size: "11",
-                    "Chunk Payload Kind (currently: {edit_chunk_payload_kind.read()}):"
-                }
+                label { font_size: "12", color: theme::TEXT_MUTED, "Payload Kind" }
                 rect {
                     direction: "horizontal",
                     spacing: "4",
-                    Button {
+                    SegmentedChip {
+                        label: "Data".to_owned(),
+                        selected: cur_pkind == "data",
+                        compact: Some(true),
                         onpress: move |_| edit_chunk_payload_kind.set("data".to_owned()),
-                        label { font_size: "11", "Data" }
                     }
-                    Button {
+                    SegmentedChip {
+                        label: "MiniChunks".to_owned(),
+                        selected: cur_pkind == "mini_chunks",
+                        compact: Some(true),
                         onpress: move |_| {
                             edit_chunk_payload_kind.set("mini_chunks".to_owned());
                             let fname = edit_field_name.read().clone();
                             edit_payload_type_str.set(format!("{}MiniChunks", to_pascal_case(&fname)));
+                            edit_wire_format.set(None);
                         },
-                        label { font_size: "11", "MiniChunks" }
                     }
-                    Button {
+                    SegmentedChip {
+                        label: "Children".to_owned(),
+                        selected: cur_pkind == "children",
+                        compact: Some(true),
                         onpress: move |_| {
                             edit_chunk_payload_kind.set("children".to_owned());
                             let fname = edit_field_name.read().clone();
                             edit_payload_type_str.set(format!("{}Children", to_pascal_case(&fname)));
+                            edit_wire_format.set(None);
                         },
-                        label { font_size: "11", "Children" }
                     }
-                    Button {
-                        onpress: move |_| edit_chunk_payload_kind.set("ignore".to_owned()),
-                        label { font_size: "11", "Ignore" }
-                    }
-                }
-            }
-
-            label {
-                font_size: "11",
-                "Type / Target Struct Name (e.g. u32, f32, c_string, vec3, Vec<u16>, MyBlock):"
-            }
-            Input {
-                value: edit_payload_type_str.read().clone(),
-                placeholder: "u32 or MyByteBlock",
-                onchange: move |txt| edit_payload_type_str.set(txt),
-            }
-
-            rect {
-                direction: "horizontal",
-                spacing: "4",
-                for preset in ["u8", "u16", "u32", "f32", "c_string", "vec3"] {
-                    Button {
+                    SegmentedChip {
+                        label: "Ignore".to_owned(),
+                        selected: cur_pkind == "ignore",
+                        compact: Some(true),
                         onpress: move |_| {
-                            edit_chunk_payload_kind.set("data".to_owned());
-                            edit_payload_type_str.set(preset.to_owned());
+                            edit_chunk_payload_kind.set("ignore".to_owned());
+                            edit_wire_format.set(None);
                         },
-                        label { font_size: "10", "{preset}" }
                     }
                 }
             }
 
-            label {
-                font_size: "11",
-                "Wire Format (currently: {edit_wire_format.read():?}):"
-            }
-            rect {
-                direction: "vertical",
-                spacing: "4",
+            if !is_mc && cur_pkind == "ignore" {
+                label {
+                    font_size: "12",
+                    color: theme::TEXT_DIM,
+                    "Ignored chunks are skipped cleanly during schema validation."
+                }
+            } else if !is_data_payload {
+                label {
+                    font_size: "12",
+                    color: theme::TEXT_MUTED,
+                    "Target Container Type"
+                }
+                StyledInput {
+                    value: cur_ty_str.clone(),
+                    placeholder: Some("ContainerTypeName".to_owned()),
+                    onchange: move |txt| edit_payload_type_str.set(txt),
+                }
+            } else {
+                label {
+                    font_size: "12",
+                    color: theme::TEXT_MUTED,
+                    "Type / ByteBlock Struct"
+                }
+                StyledInput {
+                    value: cur_ty_str.clone(),
+                    placeholder: Some("u32, f32, bool, vec3, or MyBlock".to_owned()),
+                    onchange: move |txt| edit_payload_type_str.set(txt),
+                }
+
                 rect {
-                    direction: "horizontal",
+                    direction: "vertical",
                     spacing: "4",
-                    Button {
-                        onpress: move |_| edit_wire_format.set(None),
-                        label { font_size: "10", "None" }
+                    rect {
+                        direction: "horizontal",
+                        spacing: "4",
+                        for preset in ["u8", "u16", "u32", "f32", "bool", "usize"] {
+                            SegmentedChip {
+                                key: "{preset}",
+                                label: preset.to_owned(),
+                                selected: trimmed_ty == preset,
+                                compact: Some(true),
+                                onpress: move |_| {
+                                    edit_chunk_payload_kind.set("data".to_owned());
+                                    edit_payload_type_str.set(preset.to_owned());
+                                    edit_wire_format.set(normalize_wire_format_for_type(preset, None));
+                                },
+                            }
+                        }
                     }
-                    Button {
-                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U8Bool)),
-                        label { font_size: "10", "U8Bool" }
-                    }
-                    Button {
-                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U32Bool)),
-                        label { font_size: "10", "U32Bool" }
+                    rect {
+                        direction: "horizontal",
+                        spacing: "4",
+                        for preset in ["c_string", "vec3", "Vec<usize>"] {
+                            SegmentedChip {
+                                key: "{preset}",
+                                label: preset.to_owned(),
+                                selected: trimmed_ty == preset,
+                                compact: Some(true),
+                                onpress: move |_| {
+                                    edit_chunk_payload_kind.set("data".to_owned());
+                                    edit_payload_type_str.set(preset.to_owned());
+                                    edit_wire_format.set(normalize_wire_format_for_type(preset, None));
+                                },
+                            }
+                        }
                     }
                 }
-                rect {
-                    direction: "horizontal",
-                    spacing: "4",
-                    Button {
-                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U32Usize)),
-                        label { font_size: "10", "U32Usize" }
-                    }
-                    Button {
-                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U32UsizeVec)),
-                        label { font_size: "10", "U32UsizeVec" }
+
+                if !wf_opts.is_empty() {
+                    label { font_size: "12", color: theme::TEXT_MUTED, "Wire Format" }
+                    rect {
+                        direction: "horizontal",
+                        spacing: "4",
+                        for &(wf, lbl) in wf_opts {
+                            SegmentedChip {
+                                key: "{lbl}",
+                                label: lbl.to_owned(),
+                                selected: active_wf == Some(wf),
+                                compact: Some(true),
+                                onpress: move |_| edit_wire_format.set(Some(wf)),
+                            }
+                        }
                     }
                 }
             }
@@ -518,13 +660,19 @@ fn FieldAssignmentCard(node: SelectedNodeDetails) -> Element {
                 rect {
                     direction: "horizontal",
                     spacing: "6",
-                    Button {
+                    ActionButton {
+                        label: "Save Field".to_owned(),
+                        style: ButtonStyle::Primary,
                         onpress: move |_| {
                             let fname = edit_field_name.read().clone();
                             let card = edit_cardinality.read().clone();
-                            let wf = *edit_wire_format.read();
                             let ty_str = edit_payload_type_str.read().clone();
                             let pkind = edit_chunk_payload_kind.read().clone();
+                            let wf = if is_mc || pkind == "data" {
+                                normalize_wire_format_for_type(&ty_str, *edit_wire_format.read())
+                            } else {
+                                None
+                            };
                             let pref = parent_ref_save.clone();
 
                             state.mutate_schema(
@@ -547,11 +695,12 @@ fn FieldAssignmentCard(node: SelectedNodeDetails) -> Element {
                                 },
                             );
                         },
-                        label { font_weight: "bold", "Save Field to Schema" }
                     }
 
                     if has_existing {
-                        Button {
+                        ActionButton {
+                            label: "Delete Field".to_owned(),
+                            style: ButtonStyle::Danger,
                             onpress: move |_| {
                                 let pref = parent_ref_del.clone();
                                 state.mutate_schema(
@@ -565,15 +714,14 @@ fn FieldAssignmentCard(node: SelectedNodeDetails) -> Element {
                                     },
                                 );
                             },
-                            label { color: theme::ACCENT_RED, "Delete Field" }
                         }
                     }
                 }
             } else {
                 label {
-                    font_size: "11",
+                    font_size: "12",
                     color: theme::TEXT_MUTED,
-                    "Read-only in current schema (assign parent container or open the imported schema to edit)."
+                    "Read-only in this schema (edit via the parent container or open the imported schema)."
                 }
             }
         }
@@ -585,6 +733,7 @@ fn ByteBlockEditorCard(owner_module: SchemaId, bb_name: String) -> Element {
     let mut state = use_context::<EditorState>();
     let mut new_bb_field_name = use_signal(|| "field_0".to_owned());
     let mut new_bb_field_type = use_signal(|| "u32".to_owned());
+    let mut new_bb_wire_format = use_signal(|| None::<WireFormat>);
     let mut new_bb_field_pad = use_signal(|| "0".to_owned());
     let mut struct_pad_input = use_signal(|| "0".to_owned());
 
@@ -610,77 +759,91 @@ fn ByteBlockEditorCard(owner_module: SchemaId, bb_name: String) -> Element {
 
     let bb_pad_save = bb_name.clone();
     let bb_add = bb_name.clone();
+    let new_ty_str = new_bb_field_type.read().clone();
+    let bb_wf_opts = compatible_wire_formats(&new_ty_str);
+    let bb_active_wf = normalize_wire_format_for_type(&new_ty_str, *new_bb_wire_format.read());
 
     rsx! {
         rect {
             width: "fill",
-            padding: "8",
+            padding: "10",
+            corner_radius: "4",
             background: theme::BG_CARD,
             direction: "vertical",
-            spacing: "6",
+            spacing: "8",
 
             label {
                 font_size: "12",
                 font_weight: "bold",
                 color: theme::ACCENT_AMBER,
-                "3. ByteBlock Struct `{bb_name}` ({bb_def.fields.len()} fields, pad_after={bb_pad_val}B)"
+                "3. ByteBlock `{bb_name}` ({bb_def.fields.len()} fields, pad_after={bb_pad_val}B)"
             }
 
             if !is_local {
                 label {
-                    font_size: "11",
+                    font_size: "12",
                     color: theme::TEXT_MUTED,
                     "Defined in imported schema `{owner_label}` (read-only)."
                 }
             }
 
-            for (f_idx, field) in bb_def.fields.iter().enumerate() {
-                {
-                    let f_summary = format!(
-                        "#{f_idx} {}: {}{}{}",
-                        field.name,
-                        field.ty.label(),
-                        field
-                            .wire_format
-                            .map(|w| format!(" ({})", w.rust_type_name()))
-                            .unwrap_or_default(),
-                        field
-                            .pad_after
-                            .map(|p| format!(" [+{p}B pad]"))
-                            .unwrap_or_default()
-                    );
-                    let bb_del = bb_name.clone();
-                    rsx! {
-                        rect {
-                            padding: "2 4",
-                            background: theme::BG_INSET,
-                            direction: "horizontal",
-                            spacing: "6",
-                            cross_align: "center",
+            rect {
+                width: "fill",
+                direction: "vertical",
+                spacing: "3",
+                for (f_idx, field) in bb_def.fields.iter().enumerate() {
+                    {
+                        let f_summary = format!(
+                            "#{f_idx} {}: {}{}{}",
+                            field.name,
+                            field.ty.label(),
+                            field
+                                .wire_format
+                                .map(|w| format!(" ({})", w.rust_type_name()))
+                                .unwrap_or_default(),
+                            field
+                                .pad_after
+                                .map(|p| format!(" [+{p}B pad]"))
+                                .unwrap_or_default()
+                        );
+                        let bb_del = bb_name.clone();
+                        rsx! {
+                            rect {
+                                width: "fill",
+                                padding: "4 6",
+                                corner_radius: "3",
+                                background: theme::BG_INSET,
+                                direction: "horizontal",
+                                spacing: "6",
+                                cross_align: "center",
 
-                            if is_local {
-                                Button {
-                                    onpress: move |_| {
-                                        let target_bb = bb_del.clone();
-                                        state.mutate_schema(
-                                            format!("Removed field #{f_idx} from `{target_bb}`"),
-                                            move |s, _| {
-                                                if let Some(TypeDef::ByteBlock(b)) = s.types.get_mut(&target_bb)
-                                                    && f_idx < b.fields.len()
-                                                {
-                                                    b.fields.remove(f_idx);
-                                                }
-                                                Ok(())
-                                            },
-                                        );
-                                    },
-                                    label { font_size: "10", "Del" }
+                                if is_local {
+                                    ActionButton {
+                                        label: "Del".to_owned(),
+                                        style: ButtonStyle::Danger,
+                                        compact: Some(true),
+                                        onpress: move |_| {
+                                            let target_bb = bb_del.clone();
+                                            state.mutate_schema(
+                                                format!("Removed field #{f_idx} from `{target_bb}`"),
+                                                move |s, _| {
+                                                    if let Some(TypeDef::ByteBlock(b)) = s.types.get_mut(&target_bb)
+                                                        && f_idx < b.fields.len()
+                                                    {
+                                                        b.fields.remove(f_idx);
+                                                    }
+                                                    Ok(())
+                                                },
+                                            );
+                                        },
+                                    }
                                 }
-                            }
-                            label {
-                                font_size: "11",
-                                font_family: "monospace",
-                                "{f_summary}"
+                                label {
+                                    font_size: "12",
+                                    font_family: "monospace",
+                                    color: theme::TEXT_PRIMARY,
+                                    "{f_summary}"
+                                }
                             }
                         }
                     }
@@ -689,16 +852,21 @@ fn ByteBlockEditorCard(owner_module: SchemaId, bb_name: String) -> Element {
 
             if is_local {
                 rect {
+                    width: "fill",
                     direction: "horizontal",
-                    spacing: "6",
+                    spacing: "8",
                     cross_align: "center",
-                    label { font_size: "11", "pad_after (B):" }
-                    Input {
+                    label { font_size: "12", color: theme::TEXT_MUTED, "pad_after (B)" }
+                    StyledInput {
+                        width: Some("80".to_owned()),
                         value: struct_pad_input.read().clone(),
-                        placeholder: "0",
+                        placeholder: Some("0".to_owned()),
                         onchange: move |txt| struct_pad_input.set(txt),
                     }
-                    Button {
+                    ActionButton {
+                        label: "Set Pad".to_owned(),
+                        style: ButtonStyle::Secondary,
+                        compact: Some(true),
                         onpress: move |_| {
                             let target_bb = bb_pad_save.clone();
                             let pad_opt: Option<usize> = struct_pad_input.read().trim().parse().ok();
@@ -707,61 +875,139 @@ fn ByteBlockEditorCard(owner_module: SchemaId, bb_name: String) -> Element {
                                 move |s, _| set_byte_block_pad_after(s, &target_bb, pad_opt),
                             );
                         },
-                        label { font_size: "11", "Set Pad" }
                     }
                 }
 
-                label { font_size: "11", "Append Field (name / type / pad_after):" }
-                Input {
+                label {
+                    font_size: "12",
+                    font_weight: "bold",
+                    color: theme::TEXT_MUTED,
+                    "Append Field"
+                }
+                StyledInput {
                     value: new_bb_field_name.read().clone(),
-                    placeholder: "field_name",
+                    placeholder: Some("field_name".to_owned()),
                     onchange: move |txt| new_bb_field_name.set(txt),
                 }
-                Input {
-                    value: new_bb_field_type.read().clone(),
-                    placeholder: "u32, f32, vec3, [u8; 4]...",
-                    onchange: move |txt| new_bb_field_type.set(txt),
+                StyledInput {
+                    value: new_ty_str.clone(),
+                    placeholder: Some("u32, f32, bool, vec3, [u8; 4]...".to_owned()),
+                    onchange: move |txt: String| {
+                        let wf = normalize_wire_format_for_type(&txt, *new_bb_wire_format.read());
+                        new_bb_wire_format.set(wf);
+                        new_bb_field_type.set(txt);
+                    },
                 }
-                Input {
+
+                if !bb_wf_opts.is_empty() {
+                    rect {
+                        direction: "horizontal",
+                        spacing: "4",
+                        cross_align: "center",
+                        label { font_size: "12", color: theme::TEXT_MUTED, "Wire Format" }
+                        for &(wf, lbl) in bb_wf_opts {
+                            SegmentedChip {
+                                key: "{lbl}",
+                                label: lbl.to_owned(),
+                                selected: bb_active_wf == Some(wf),
+                                compact: Some(true),
+                                onpress: move |_| new_bb_wire_format.set(Some(wf)),
+                            }
+                        }
+                    }
+                }
+
+                StyledInput {
                     value: new_bb_field_pad.read().clone(),
-                    placeholder: "0 (pad_after bytes)",
+                    placeholder: Some("0 (optional pad_after bytes)".to_owned()),
                     onchange: move |txt| new_bb_field_pad.set(txt),
                 }
-                Button {
-                    onpress: move |_| {
-                        let fname = new_bb_field_name.read().trim().to_owned();
-                        let fty_str = new_bb_field_type.read().trim().to_owned();
-                        let pad: Option<usize> =
-                            new_bb_field_pad.read().trim().parse().ok().filter(|&p| p > 0);
-                        let target_bb = bb_add.clone();
+                rect {
+                    direction: "horizontal",
+                    ActionButton {
+                        label: "+ Append Field".to_owned(),
+                        style: ButtonStyle::Primary,
+                        onpress: move |_| {
+                            let fname = new_bb_field_name.read().trim().to_owned();
+                            let fty_str = new_bb_field_type.read().trim().to_owned();
+                            let pad: Option<usize> =
+                                new_bb_field_pad.read().trim().parse().ok().filter(|&p| p > 0);
+                            let wf = normalize_wire_format_for_type(&fty_str, *new_bb_wire_format.read());
+                            let target_bb = bb_add.clone();
 
-                        state.mutate_schema(
-                            format!("Appended field `{fname}` to `{target_bb}`"),
-                            move |s, _| {
-                                if fname.is_empty() {
-                                    return Err("Field name cannot be empty".to_owned());
-                                }
-                                let dt = DataType::parse_str(&fty_str)
-                                    .map_err(|e| format!("Invalid DataType `{fty_str}`: {e}"))?;
-                                let wf = dt.default_wire_format();
-                                if let Some(TypeDef::ByteBlock(b)) = s.types.get_mut(&target_bb) {
-                                    b.fields.push(ByteFieldDef {
-                                        name: fname,
-                                        description: None,
-                                        ty: dt,
-                                        wire_format: wf,
-                                        pad_after: pad,
-                                    });
-                                    Ok(())
-                                } else {
-                                    Err(format!("ByteBlock `{target_bb}` not found"))
-                                }
-                            },
-                        );
-                    },
-                    label { "+ Append Field to {bb_name}" }
+                            state.mutate_schema(
+                                format!("Appended field `{fname}` to `{target_bb}`"),
+                                move |s, _| {
+                                    if fname.is_empty() {
+                                        return Err("Field name cannot be empty".to_owned());
+                                    }
+                                    let dt = DataType::parse_str(&fty_str)
+                                        .map_err(|e| format!("Invalid DataType `{fty_str}`: {e}"))?;
+                                    if let Some(TypeDef::ByteBlock(b)) = s.types.get_mut(&target_bb) {
+                                        b.fields.push(ByteFieldDef {
+                                            name: fname,
+                                            description: None,
+                                            ty: dt,
+                                            wire_format: wf,
+                                            pad_after: pad,
+                                        });
+                                        Ok(())
+                                    } else {
+                                        Err(format!("ByteBlock `{target_bb}` not found"))
+                                    }
+                                },
+                            );
+                        },
+                    }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compatible_wire_formats_filters_by_data_type() {
+        assert_eq!(
+            compatible_wire_formats("bool"),
+            &[
+                (WireFormat::U8Bool, "U8Bool (1B)"),
+                (WireFormat::U32Bool, "U32Bool (4B)"),
+            ]
+        );
+        assert_eq!(
+            compatible_wire_formats("usize"),
+            &[(WireFormat::U32Usize, "U32Usize (4B)")]
+        );
+        assert_eq!(
+            compatible_wire_formats("Vec<usize>"),
+            &[(WireFormat::U32UsizeVec, "U32UsizeVec")]
+        );
+        assert!(compatible_wire_formats("u32").is_empty());
+        assert!(compatible_wire_formats("vec3").is_empty());
+        assert!(compatible_wire_formats("MeshInfo").is_empty());
+    }
+
+    #[test]
+    fn test_normalize_wire_format_preserves_valid_and_clears_invalid() {
+        assert_eq!(
+            normalize_wire_format_for_type("bool", Some(WireFormat::U8Bool)),
+            Some(WireFormat::U8Bool)
+        );
+        assert_eq!(
+            normalize_wire_format_for_type("bool", Some(WireFormat::U32Usize)),
+            Some(WireFormat::U32Bool)
+        );
+        assert_eq!(
+            normalize_wire_format_for_type("Vec<usize>", None),
+            Some(WireFormat::U32UsizeVec)
+        );
+        assert_eq!(
+            normalize_wire_format_for_type("f32", Some(WireFormat::U32Bool)),
+            None
+        );
     }
 }

@@ -31,6 +31,25 @@ pub const BG_CURSOR: &str = "rgb(225, 165, 40)";
 /// Padding byte-span background.
 pub const BG_PADDING: &str = "rgb(65, 65, 72)";
 
+/// Subtle horizontal/vertical hairline border and divider color.
+pub const BORDER_SUBTLE: &str = "rgb(52, 57, 74)";
+/// Inactive radio/chip selector background.
+pub const BG_CHIP: &str = "rgb(35, 39, 52)";
+/// Selected radio/chip selector background.
+pub const BG_CHIP_ACTIVE: &str = "rgb(40, 92, 162)";
+/// Inactive chip border specification.
+pub const BORDER_CHIP: &str = "1 solid rgb(58, 64, 84)";
+/// Selected chip border specification.
+pub const BORDER_CHIP_ACTIVE: &str = "1 solid rgb(105, 175, 250)";
+/// Primary affirmative action button background.
+pub const BG_BTN_PRIMARY: &str = "rgb(38, 96, 175)";
+/// Primary action button border specification.
+pub const BORDER_BTN_PRIMARY: &str = "1 solid rgb(92, 160, 240)";
+/// Destructive action button background.
+pub const BG_BTN_DANGER: &str = "rgb(82, 34, 40)";
+/// Destructive action button border specification.
+pub const BORDER_BTN_DANGER: &str = "1 solid rgb(155, 68, 76)";
+
 /// Primary light foreground text color.
 pub const TEXT_PRIMARY: &str = "rgb(235, 237, 245)";
 /// Secondary muted foreground text color.
