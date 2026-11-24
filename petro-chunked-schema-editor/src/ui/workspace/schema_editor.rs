@@ -24,6 +24,7 @@ pub fn SchemaEditorPane(node: Option<SelectedNodeDetails>) -> Element {
         rect {
             width: "390",
             height: "fill",
+            content: "flex",
             padding: "8 10",
             background: theme::BG_PANE_RIGHT,
             direction: "vertical",
@@ -38,7 +39,7 @@ pub fn SchemaEditorPane(node: Option<SelectedNodeDetails>) -> Element {
 
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 rect {
                     width: "fill",
                     direction: "vertical",
@@ -481,27 +482,35 @@ fn FieldAssignmentCard(node: SelectedNodeDetails) -> Element {
                 "Wire Format (currently: {edit_wire_format.read():?}):"
             }
             rect {
-                direction: "horizontal",
+                direction: "vertical",
                 spacing: "4",
-                Button {
-                    onpress: move |_| edit_wire_format.set(None),
-                    label { font_size: "10", "None" }
+                rect {
+                    direction: "horizontal",
+                    spacing: "4",
+                    Button {
+                        onpress: move |_| edit_wire_format.set(None),
+                        label { font_size: "10", "None" }
+                    }
+                    Button {
+                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U8Bool)),
+                        label { font_size: "10", "U8Bool" }
+                    }
+                    Button {
+                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U32Bool)),
+                        label { font_size: "10", "U32Bool" }
+                    }
                 }
-                Button {
-                    onpress: move |_| edit_wire_format.set(Some(WireFormat::U8Bool)),
-                    label { font_size: "10", "U8Bool" }
-                }
-                Button {
-                    onpress: move |_| edit_wire_format.set(Some(WireFormat::U32Bool)),
-                    label { font_size: "10", "U32Bool" }
-                }
-                Button {
-                    onpress: move |_| edit_wire_format.set(Some(WireFormat::U32Usize)),
-                    label { font_size: "10", "U32Usize" }
-                }
-                Button {
-                    onpress: move |_| edit_wire_format.set(Some(WireFormat::U32UsizeVec)),
-                    label { font_size: "10", "U32UsizeVec" }
+                rect {
+                    direction: "horizontal",
+                    spacing: "4",
+                    Button {
+                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U32Usize)),
+                        label { font_size: "10", "U32Usize" }
+                    }
+                    Button {
+                        onpress: move |_| edit_wire_format.set(Some(WireFormat::U32UsizeVec)),
+                        label { font_size: "10", "U32UsizeVec" }
+                    }
                 }
             }
 
@@ -683,7 +692,7 @@ fn ByteBlockEditorCard(owner_module: SchemaId, bb_name: String) -> Element {
                     direction: "horizontal",
                     spacing: "6",
                     cross_align: "center",
-                    label { font_size: "11", "Trailing pad_after (B):" }
+                    label { font_size: "11", "pad_after (B):" }
                     Input {
                         value: struct_pad_input.read().clone(),
                         placeholder: "0",

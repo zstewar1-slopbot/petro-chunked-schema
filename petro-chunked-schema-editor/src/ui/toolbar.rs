@@ -11,18 +11,19 @@ use super::theme;
 pub fn Toolbar() -> Element {
     let mut state = use_context::<EditorState>();
     let dir_count = state.persisted.read().game_data_dirs.len();
+    let active_schema_name = state.schema.read().name.clone();
 
     rsx! {
         rect {
             width: "fill",
-            padding: "8 12",
+            padding: "6 12",
             background: theme::BG_TOOLBAR,
             direction: "horizontal",
             cross_align: "center",
-            spacing: "8",
+            spacing: "6",
 
             label {
-                font_size: "15",
+                font_size: "14",
                 font_weight: "bold",
                 color: theme::ACCENT_BLUE,
                 "Petro Schema Editor"
@@ -30,39 +31,55 @@ pub fn Toolbar() -> Element {
 
             Button {
                 onpress: move |_| state.toggle_modal(ActiveModal::FileBrowser),
-                label { "Browse Files / .meg..." }
+                label { font_size: "12", "Files / .meg..." }
+            }
+
+            label {
+                font_size: "11",
+                color: theme::TEXT_MUTED,
+                "Schemas:"
             }
 
             for &preset in known_formats::BUILTIN_NAMES {
-                Button {
-                    onpress: move |_| state.load_builtin(preset),
-                    label { "Schema: {preset}" }
+                {
+                    let is_active = active_schema_name == preset;
+                    rsx! {
+                        Button {
+                            onpress: move |_| state.load_builtin(preset),
+                            label {
+                                font_size: "12",
+                                font_weight: if is_active { "bold" } else { "normal" },
+                                color: if is_active { theme::ACCENT_BLUE } else { theme::TEXT_PRIMARY },
+                                "{preset}"
+                            }
+                        }
+                    }
                 }
             }
 
             Button {
                 onpress: move |_| state.start_blank_schema(),
-                label { "+ Blank Schema" }
+                label { font_size: "12", "+ Blank" }
             }
 
             Button {
                 onpress: move |_| state.toggle_modal(ActiveModal::YamlFile),
-                label { "YAML / Schema..." }
+                label { font_size: "12", "YAML..." }
             }
 
             Button {
                 onpress: move |_| state.toggle_modal(ActiveModal::GameDataDirs),
-                label { "GameData Dirs ({dir_count})..." }
+                label { font_size: "12", "GameData ({dir_count})" }
             }
 
             Button {
                 onpress: move |_| state.toggle_modal(ActiveModal::BatchValidate),
-                label { "Validate All..." }
+                label { font_size: "12", "Validate..." }
             }
 
             Button {
                 onpress: move |_| state.toggle_modal(ActiveModal::RustCodegen),
-                label { "Emit Rust Code" }
+                label { font_size: "12", "Emit Rust" }
             }
         }
     }

@@ -24,6 +24,7 @@ pub fn ChunkTreePane() -> Element {
         rect {
             width: "340",
             height: "fill",
+            content: "flex",
             padding: "8",
             background: theme::BG_PANE_LEFT,
             direction: "vertical",
@@ -48,22 +49,28 @@ pub fn ChunkTreePane() -> Element {
 
             ScrollView {
                 width: "fill",
-                height: "fill",
-                if flat_tree.is_empty() {
-                    label {
-                        font_size: "12",
-                        color: theme::TEXT_MUTED,
-                        "No file loaded. Click 'Browse Files / .meg...' above to open an .alo or .ala file."
+                height: "flex(1)",
+                rect {
+                    width: "fill",
+                    direction: "vertical",
+                    spacing: "2",
+
+                    if flat_tree.is_empty() {
+                        label {
+                            font_size: "12",
+                            color: theme::TEXT_MUTED,
+                            "No file loaded. Click 'Files / .meg...' above to open an .alo or .ala file."
+                        }
                     }
-                }
-                for row in flat_tree {
-                    {
-                        let is_selected = row.tree_path == selected_path;
-                        rsx! {
-                            ChunkTreeRow {
-                                key: "{row.tree_path}",
-                                row,
-                                is_selected,
+                    for row in flat_tree {
+                        {
+                            let is_selected = row.tree_path == selected_path;
+                            rsx! {
+                                ChunkTreeRow {
+                                    key: "{row.tree_path}",
+                                    row,
+                                    is_selected,
+                                }
                             }
                         }
                     }
@@ -113,7 +120,7 @@ fn ChunkTreeRow(row: FlatTreeRow, is_selected: bool) -> Element {
     let toggle_label = if row.child_count > 0 {
         if row.is_expanded { "[-]" } else { "[+]" }
     } else {
-        " · "
+        "·"
     };
     let sz = row.size;
     let id_lbl = row.id_label.clone();
@@ -121,36 +128,56 @@ fn ChunkTreeRow(row: FlatTreeRow, is_selected: bool) -> Element {
     rsx! {
         rect {
             width: "fill",
-            padding: "3 4",
-            margin: "1 0",
+            overflow: "clip",
+            padding: "4 6",
+            corner_radius: "4",
             background: "{bg}",
             direction: "horizontal",
-            spacing: "4",
+            spacing: "5",
             cross_align: "center",
 
-            rect { width: "{indent_px}" }
-
-            if row.child_count > 0 {
-                Button {
-                    onpress: move |_| state.toggle_collapse(&row_path_toggle),
-                    label { font_size: "11", "{toggle_label}" }
-                }
-            } else {
-                label { font_size: "11", color: theme::TEXT_DIM, "{toggle_label}" }
+            if indent_px > 0 {
+                rect { width: "{indent_px}" }
             }
 
-            Button {
-                onpress: move |_| state.select_node(row_path.clone()),
+            if row.child_count > 0 {
+                rect {
+                    padding: "1 5",
+                    corner_radius: "3",
+                    background: theme::BG_CARD,
+                    onpointerdown: move |_| state.toggle_collapse(&row_path_toggle),
+                    label {
+                        font_size: "10",
+                        font_family: "monospace",
+                        color: theme::TEXT_PRIMARY,
+                        "{toggle_label}"
+                    }
+                }
+            } else {
+                label {
+                    font_size: "11",
+                    color: theme::TEXT_DIM,
+                    " · "
+                }
+            }
+
+            rect {
+                padding: "1 2",
+                direction: "horizontal",
+                spacing: "5",
+                cross_align: "center",
+                onpointerdown: move |_| state.select_node(row_path.clone()),
+
                 label {
                     font_size: "11",
                     font_family: "monospace",
                     color: "{id_color}",
-                    "{id_lbl} "
+                    "{id_lbl}"
                 }
                 label {
                     font_size: "11",
                     color: "{name_color}",
-                    "{name_str}{type_suffix} "
+                    "{name_str}{type_suffix}"
                 }
                 label {
                     font_size: "10",
@@ -171,7 +198,9 @@ fn DiagnosticsPanel(file: DynamicFile) -> Element {
         rect {
             width: "fill",
             height: "155",
+            content: "flex",
             padding: "6",
+            corner_radius: "4",
             background: theme::BG_INSET,
             direction: "vertical",
             spacing: "4",
@@ -184,7 +213,7 @@ fn DiagnosticsPanel(file: DynamicFile) -> Element {
             }
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 if diag_count == 0 {
                     label {
                         font_size: "11",
@@ -203,8 +232,13 @@ fn DiagnosticsPanel(file: DynamicFile) -> Element {
                             diag.tree_path.clone()
                         };
                         rsx! {
-                            Button {
-                                onpress: move |_| state.select_node(jump_path.clone()),
+                            rect {
+                                width: "fill",
+                                padding: "3 5",
+                                corner_radius: "3",
+                                background: theme::BG_ROW,
+                                margin: "1 0",
+                                onpointerdown: move |_| state.select_node(jump_path.clone()),
                                 label {
                                     font_size: "11",
                                     color: theme::ACCENT_RED,

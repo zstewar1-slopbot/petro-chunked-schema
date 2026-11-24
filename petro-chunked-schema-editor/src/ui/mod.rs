@@ -15,12 +15,14 @@ use workspace::Workspace;
 
 /// Top-level Freya application component.
 pub fn app() -> Element {
+    use_init_theme(|| DARK_THEME);
     let _state = use_init_editor_state();
 
     rsx! {
         rect {
             width: "fill",
             height: "fill",
+            content: "flex",
             background: theme::BG_ROOT,
             color: theme::TEXT_PRIMARY,
             direction: "vertical",

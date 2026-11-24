@@ -62,7 +62,7 @@ pub fn BatchValidateModal() -> Element {
                 }
                 ScrollView {
                     width: "fill",
-                    height: "fill",
+                    height: "flex(1)",
                     for fail in &rep.failures {
                         {
                             let f_src = fail.source.clone();

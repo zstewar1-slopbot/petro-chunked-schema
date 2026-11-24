@@ -24,8 +24,9 @@ pub fn HexInspectorPane(node: Option<SelectedNodeDetails>) -> Element {
 
     rsx! {
         rect {
-            width: "fill",
+            width: "flex(1)",
             height: "fill",
+            content: "flex",
             padding: "8 12",
             background: theme::BG_ROOT,
             direction: "vertical",
@@ -82,64 +83,79 @@ fn NodeHeaderBar(node: SelectedNodeDetails) -> Element {
         rect {
             width: "fill",
             padding: "8 10",
+            corner_radius: "4",
             background: theme::BG_ROW,
-            direction: "horizontal",
-            spacing: "12",
-            cross_align: "center",
+            direction: "vertical",
+            spacing: "4",
 
-            label {
-                font_size: "13",
-                font_weight: "bold",
-                color: theme::ACCENT_BLUE,
-                if node.is_mini_chunk {
-                    "Mini-Chunk 0x{node.id:02X} ({node.id})"
-                } else {
-                    "Chunk 0x{node.id:04X}"
-                }
-            }
-            label {
-                font_size: "12",
-                color: theme::TEXT_MUTED,
-                "Path: {node.tree_path} | Header: 0x{node.header_offset:X} | Payload: 0x{node.payload_offset:X} | Size: {node.size} bytes"
-            }
-            if let Some(tlabel) = &node.schema_type_label {
+            rect {
+                width: "fill",
+                direction: "horizontal",
+                spacing: "12",
+                cross_align: "center",
+
                 label {
-                    font_size: "12",
-                    color: theme::ACCENT_GREEN,
-                    "Type: {tlabel}"
-                }
-            }
-            if let Some(dec) = &node.decoded {
-                label {
-                    font_size: "12",
+                    font_size: "13",
+                    font_weight: "bold",
                     color: theme::ACCENT_BLUE,
-                    "Value: {dec.short_summary()}"
+                    if node.is_mini_chunk {
+                        "Mini-Chunk 0x{node.id:02X} ({node.id})"
+                    } else {
+                        "Chunk 0x{node.id:04X}"
+                    }
                 }
-            }
-            if !node.errors.is_empty() {
-                label {
-                    font_size: "12",
-                    color: theme::ACCENT_RED,
-                    "Node Errors: {node.errors.join(\"; \")}"
+                if let Some(tlabel) = &node.schema_type_label {
+                    label {
+                        font_size: "12",
+                        color: theme::ACCENT_GREEN,
+                        "Type: {tlabel}"
+                    }
                 }
-            }
-            if total_bytes > 0 {
-                label {
-                    font_size: "12",
-                    color: if assigned_bytes >= total_bytes { theme::ACCENT_GREEN } else { theme::ACCENT_AMBER },
-                    "Assigned: {assigned_bytes}/{total_bytes} bytes"
+                if total_bytes > 0 {
+                    label {
+                        font_size: "12",
+                        color: if assigned_bytes >= total_bytes { theme::ACCENT_GREEN } else { theme::ACCENT_AMBER },
+                        "Assigned: {assigned_bytes}/{total_bytes}B"
+                    }
+                }
+                if !node.is_container && !node.is_mini_chunk && (node.looks_like_mini_chunks || is_forced_plain) {
+                    Button {
+                        onpress: move |_| state.toggle_force_plain_data(&node_path),
+                        label {
+                            font_size: "11",
+                            if is_forced_plain {
+                                "Forced Plain (Toggle)"
+                            } else {
+                                "Auto Mini-Chunks (Force Plain)"
+                            }
+                        }
+                    }
                 }
             }
 
-            if !node.is_container && !node.is_mini_chunk && (node.looks_like_mini_chunks || is_forced_plain) {
-                Button {
-                    onpress: move |_| state.toggle_force_plain_data(&node_path),
+            rect {
+                width: "fill",
+                direction: "horizontal",
+                spacing: "12",
+                cross_align: "center",
+
+                label {
+                    font_size: "12",
+                    color: theme::TEXT_MUTED,
+                    "Path: {node.tree_path} | Header: 0x{node.header_offset:X} | Payload: 0x{node.payload_offset:X} | Size: {node.size} bytes"
+                }
+                if let Some(dec) = &node.decoded {
                     label {
-                        if is_forced_plain {
-                            "Mode: Forced Plain Data (Click to allow Mini-Chunks)"
-                        } else {
-                            "Mode: Auto Mini-Chunks (Click to Force Plain Data)"
-                        }
+                        font_size: "12",
+                        color: theme::ACCENT_BLUE,
+                        "Value: {dec.short_summary()}"
+                    }
+                }
+                if !node.errors.is_empty() {
+                    label {
+                        font_size: "12",
+                        color: theme::ACCENT_RED,
+                        "Node Errors: {node.errors.join(\"; \")}"
                     }
                 }
             }
@@ -154,8 +170,10 @@ fn SpanLegend(spans: Vec<ByteSpanAnnotation>) -> Element {
     rsx! {
         rect {
             width: "fill",
-            height: "88",
+            height: "96",
+            content: "flex",
             padding: "6 8",
+            corner_radius: "4",
             background: theme::BG_SUB_CARD,
             direction: "vertical",
             spacing: "4",
@@ -168,10 +186,11 @@ fn SpanLegend(spans: Vec<ByteSpanAnnotation>) -> Element {
             }
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 rect {
-                    direction: "horizontal",
-                    spacing: "6",
+                    width: "fill",
+                    direction: "vertical",
+                    spacing: "3",
                     for span in spans {
                         {
                             let bg = theme::span_bg_color(&span);
@@ -182,15 +201,16 @@ fn SpanLegend(spans: Vec<ByteSpanAnnotation>) -> Element {
                             );
                             rsx! {
                                 rect {
-                                    padding: "2 6",
+                                    width: "fill",
+                                    padding: "3 7",
+                                    corner_radius: "4",
                                     background: "{bg}",
-                                    Button {
-                                        onpress: move |_| state.jump_to_byte(sp_start),
-                                        label {
-                                            font_size: "11",
-                                            font_family: "monospace",
-                                            "{sp_text}"
-                                        }
+                                    onpointerdown: move |_| state.jump_to_byte(sp_start),
+                                    label {
+                                        font_size: "11",
+                                        font_family: "monospace",
+                                        color: theme::TEXT_PRIMARY,
+                                        "{sp_text}"
                                     }
                                 }
                             }
@@ -268,7 +288,7 @@ fn HexGrid(node: SelectedNodeDetails, on_select_byte: EventHandler<usize>) -> El
     rsx! {
         ScrollView {
             width: "fill",
-            height: "fill",
+            height: "flex(1)",
             rect {
                 width: "fill",
                 padding: "6",
@@ -343,6 +363,7 @@ fn HexGrid(node: SelectedNodeDetails, on_select_byte: EventHandler<usize>) -> El
                                             rsx! {
                                                 rect {
                                                     padding: "2 4",
+                                                    corner_radius: "3",
                                                     background: "{cell_bg}",
                                                     onpointerdown: move |_| {
                                                         state.selected_byte_offset.set(byte_idx);
@@ -392,12 +413,15 @@ fn BytePreviewPanel(
         rect {
             width: "fill",
             height: "215",
+            content: "flex",
             padding: "8 10",
+            corner_radius: "4",
             background: theme::BG_SUB_CARD,
             direction: "vertical",
             spacing: "6",
 
             rect {
+                width: "fill",
                 direction: "horizontal",
                 spacing: "10",
                 cross_align: "center",
@@ -405,12 +429,12 @@ fn BytePreviewPanel(
                     font_size: "12",
                     font_weight: "bold",
                     color: theme::ACCENT_AMBER,
-                    "Multi-Format Byte Inspector at Payload Offset 0x{cur_byte_offset:04X} ({cur_byte_offset})"
+                    "Byte Inspector @ 0x{cur_byte_offset:04X} ({cur_byte_offset})"
                 }
                 label {
                     font_size: "11",
                     color: theme::TEXT_MUTED,
-                    "New Field Name:"
+                    "Field:"
                 }
                 Input {
                     value: new_bb_field_name.read().clone(),
@@ -421,7 +445,7 @@ fn BytePreviewPanel(
 
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 if previews.is_empty() {
                     label {
                         font_size: "11",

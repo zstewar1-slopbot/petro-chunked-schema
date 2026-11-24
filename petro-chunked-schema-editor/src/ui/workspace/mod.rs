@@ -29,7 +29,8 @@ pub fn Workspace() -> Element {
     rsx! {
         rect {
             width: "fill",
-            height: "fill",
+            height: "flex(1)",
+            content: "flex",
             direction: "horizontal",
 
             ChunkTreePane {}

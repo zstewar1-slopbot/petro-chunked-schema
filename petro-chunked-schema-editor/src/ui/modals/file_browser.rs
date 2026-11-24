@@ -98,7 +98,7 @@ pub fn FileBrowserModal() -> Element {
 
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 if discovered_files.read().is_empty() {
                     label {
                         font_size: "12",

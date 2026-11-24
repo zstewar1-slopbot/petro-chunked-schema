@@ -88,7 +88,7 @@ pub fn YamlSchemaModal() -> Element {
 
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 rect {
                     padding: "8",
                     background: theme::BG_INSET,

@@ -41,6 +41,7 @@ pub fn ModalFrame(title: String, height: String, children: Element) -> Element {
         rect {
             width: "fill",
             height: "{height}",
+            content: "flex",
             padding: "10 14",
             background: theme::BG_MODAL,
             direction: "vertical",

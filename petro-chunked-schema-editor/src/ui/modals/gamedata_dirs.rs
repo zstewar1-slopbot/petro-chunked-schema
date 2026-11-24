@@ -71,7 +71,7 @@ pub fn GameDataDirsModal() -> Element {
 
             ScrollView {
                 width: "fill",
-                height: "fill",
+                height: "flex(1)",
                 for (idx, dir) in dirs.iter().enumerate() {
                     {
                         let dir_str = dir.display().to_string();
