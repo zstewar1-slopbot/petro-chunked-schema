@@ -20,7 +20,7 @@ use petro_chunked_schema::schema::{
 use petro_chunked_schema::source::SchemaRef;
 
 /// Flattened row in the left-pane chunk and mini-chunk tree view.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlatTreeRow {
     /// Unique tree path (e.g. `"0"`, `"0/1"`, `"0/1/mc2"`).
     pub tree_path: String,
@@ -167,7 +167,7 @@ pub enum ParentContainerRef {
 }
 
 /// Resolved details about the currently selected chunk or mini-chunk in the UI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectedNodeDetails {
     /// Tree path identifying this node.
     pub tree_path: String,
@@ -203,16 +203,6 @@ pub struct SelectedNodeDetails {
     pub active_byte_block: Option<(SchemaId, String)>,
 }
 
-impl SelectedNodeDetails {
-    /// Returns the local `ByteBlock` type name if this node maps to a `ByteBlock` defined directly
-    /// in the active root schema (`SchemaId::ROOT`).
-    pub fn editable_byte_block(&self) -> Option<&str> {
-        match &self.active_byte_block {
-            Some((mod_id, name)) if *mod_id == SchemaId::ROOT => Some(name.as_str()),
-            _ => None,
-        }
-    }
-}
 
 /// Looks up the node at `tree_path` in `file` and resolves its [`SelectedNodeDetails`] against
 /// `resolved`.
@@ -655,7 +645,6 @@ pub fn upsert_chunk_field(
 
 /// Removes the [`ChunkFieldDef`] matching `chunk_id` from `parent_ref`, returning the removed field
 /// name.
-#[allow(dead_code)]
 pub fn delete_chunk_field(
     schema: &mut Schema,
     parent_ref: &ParentContainerRef,
@@ -737,7 +726,6 @@ pub fn upsert_mini_chunk_field(
 
 /// Removes the [`MiniChunkFieldDef`] matching `mc_id` from `parent_ref`, returning the removed
 /// field name.
-#[allow(dead_code)]
 pub fn delete_mini_chunk_field(
     schema: &mut Schema,
     parent_ref: &ParentContainerRef,
@@ -756,7 +744,6 @@ pub fn delete_mini_chunk_field(
 }
 
 /// Updates trailing `pad_after` on a named `TypeDef::ByteBlock` in `schema.types`.
-#[allow(dead_code)]
 pub fn set_byte_block_pad_after(
     schema: &mut Schema,
     bb_name: &str,
@@ -955,7 +942,10 @@ mod tests {
         let res2 = SchemaLoader::resolve(schema.clone(), None).unwrap();
         let df2 = load_dynamic_file(&bytes, Some(&res2), &opts).unwrap();
         let child_node2 = resolve_selected_node(&df2, &res2, "0/0").unwrap();
-        assert_eq!(child_node2.editable_byte_block(), Some("Chunk0201Block"));
+        assert_eq!(
+            child_node2.active_byte_block,
+            Some((SchemaId::ROOT, "Chunk0201Block".to_owned()))
+        );
 
         append_field_to_node_byte_block(
             &mut schema,
@@ -1006,7 +996,10 @@ mod tests {
             node.parent_container,
             ParentContainerRef::Imported { .. }
         ));
-        assert_eq!(node.editable_byte_block(), None);
+        assert_ne!(
+            node.active_byte_block.as_ref().map(|(id, _)| *id),
+            Some(SchemaId::ROOT)
+        );
         assert!(node.active_byte_block.is_some());
     }
 }
