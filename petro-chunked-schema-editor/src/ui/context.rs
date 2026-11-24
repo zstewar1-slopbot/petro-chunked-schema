@@ -226,6 +226,7 @@ impl EditorState {
             let wid = Platform::get()
                 .launch_window(
                     WindowConfig::new(move || modal_window_root(kind))
+                        .with_root_context(state)
                         .with_size(w, h)
                         .with_title(title)
                         .with_background(theme::BG_MODAL)

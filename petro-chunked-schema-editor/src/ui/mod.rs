@@ -22,6 +22,7 @@ pub fn launch_editor() {
             .with_exit_on_close(true)
             .with_window(
                 WindowConfig::new(main_window_app)
+                    .with_root_context(state)
                     .with_size(1480.0, 920.0)
                     .with_title("Petro Chunked Schema Editor")
                     .with_background(theme::BG_ROOT)
