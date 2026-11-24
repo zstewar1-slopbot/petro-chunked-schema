@@ -1,44 +1,62 @@
-//! GameData directory scanner, in-memory Petroglyph `.meg` archive reader, and batch schema
-//! validator for `petro-chunked-schema-editor`.
+//! GameData directory scanner, in-memory Petroglyph `.meg` archive reader, schema I/O, and
+//! batch schema validator for `petro-chunked-schema-editor`.
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use petro_chunked_schema::dynamic::{SchemaDiagnostic, validate_bytes};
+use petro_chunked_schema::resolve::{ResolvedSchema, SchemaLoader};
 use petro_chunked_schema::schema::Schema;
+use petro_chunked_schema::source::SchemaRef;
 use petro_meg::reader::{MegReadOptions, ReadMegMeta};
 
 use crate::state::FileSource;
 
-/// A file discovered in a configured `GameData` directory (either loose on disk or inside a `.meg` archive).
+/// A file discovered in a configured `GameData` directory (either loose on disk or inside a `.meg`
+/// archive).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredFile {
+    /// Human-readable display string (`path` or `archive.meg :: entry`).
     pub display_name: String,
+    /// Lowercase file extension without a leading dot.
     pub extension: String,
+    /// Uncompressed size in bytes.
     pub size: u64,
+    /// Origin handle used to load bytes into the editor.
     pub source: FileSource,
 }
 
 /// Result of a single file failing schema validation during a batch validation run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileValidationFailure {
+    /// Human-readable display label for the failing file.
     pub display_name: String,
+    /// Source handle allowing one-click opening in the editor.
     pub source: FileSource,
+    /// Validation and decoding diagnostics collected for this file.
     pub diagnostics: Vec<SchemaDiagnostic>,
 }
 
-/// Summary report from running "Validate" over all files matching an extension in all configured
-/// `GameData` directories.
+/// Summary report from running batch validation over all files matching an extension across all
+/// configured `GameData` directories.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BatchValidationReport {
+    /// Name of the evaluated schema.
     pub schema_name: String,
+    /// Lowercase extension filter that was checked.
     pub extension: String,
+    /// Total number of matching files tested.
     pub total_checked: usize,
+    /// Number of files with zero diagnostics.
     pub passed_count: usize,
+    /// Number of files with one or more diagnostics.
     pub failed_count: usize,
+    /// Number of files skipped due to I/O errors.
     pub skipped_count: usize,
+    /// Detailed failure entries (capped at 200 to keep UI responsive).
     pub failures: Vec<FileValidationFailure>,
 }
 
@@ -69,7 +87,9 @@ pub fn load_file_bytes(source: &FileSource) -> anyhow::Result<Vec<u8>> {
                 })?;
             let mut reader = target
                 .extract_from(&mut file, &MegReadOptions::default())
-                .with_context(|| format!("extracting `{entry_name}` from {}", meg_path.display()))?;
+                .with_context(|| {
+                    format!("extracting `{entry_name}` from {}", meg_path.display())
+                })?;
             let mut buf = Vec::with_capacity(target.size() as usize);
             reader
                 .read_to_end(&mut buf)
@@ -100,7 +120,6 @@ pub fn discover_files(
         collect_dir_files(dir, 0, 4, &mut disk_files, &mut meg_files);
     }
 
-    // 1. Check loose disk files
     for path in disk_files {
         if out.len() >= max_results {
             return out;
@@ -130,7 +149,6 @@ pub fn discover_files(
         });
     }
 
-    // 2. Check entries inside .meg archives
     for meg_path in meg_files {
         if out.len() >= max_results {
             return out;
@@ -181,10 +199,10 @@ pub fn discover_files(
     out
 }
 
-/// Runs batch validation of `schema` across all files with `extension` in all configured
-/// `GameData` directories (both loose files and inside `.meg` archives).
+/// Runs batch validation of `schema` across every loose file and `.meg` archive entry matching
+/// `extension` in `game_data_dirs`.
 pub fn run_batch_validation(
-    schema: &Schema,
+    schema: &ResolvedSchema,
     game_data_dirs: &[PathBuf],
     extension: &str,
 ) -> BatchValidationReport {
@@ -193,7 +211,7 @@ pub fn run_batch_validation(
         .trim_start_matches('.')
         .to_ascii_lowercase();
     let mut report = BatchValidationReport {
-        schema_name: schema.name.clone(),
+        schema_name: schema.root_schema().name.clone(),
         extension: ext_clean.clone(),
         ..Default::default()
     };
@@ -209,22 +227,6 @@ pub fn run_batch_validation(
     }
 
     let mut check_buffer = |bytes: &[u8], display_name: String, source: FileSource| {
-        // Petroglyph uses the `.alo` extension for both 3D models (`AloModel`) and particle
-        // systems (`AloParticle`, whose root chunk is `0x0900`). Skip the other sub-format when
-        // validating specifically `AloParticle` or `AloModel`.
-        if ext_clean == "alo" {
-            let is_particle_root = bytes.len() >= 8
-                && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == 0x0900;
-            if schema.name.eq_ignore_ascii_case("AloParticle") && !is_particle_root {
-                report.skipped_count += 1;
-                return;
-            }
-            if schema.name.eq_ignore_ascii_case("AloModel") && is_particle_root {
-                report.skipped_count += 1;
-                return;
-            }
-        }
-
         report.total_checked += 1;
         match validate_bytes(schema, bytes) {
             Ok(_) => {
@@ -252,9 +254,14 @@ pub fn run_batch_validation(
         if ext != ext_clean {
             continue;
         }
-        if let Ok(bytes) = std::fs::read(&path) {
-            let disp = path.display().to_string();
-            check_buffer(&bytes, disp, FileSource::Disk { path });
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let disp = path.display().to_string();
+                check_buffer(&bytes, disp, FileSource::Disk { path });
+            }
+            Err(_) => {
+                report.skipped_count += 1;
+            }
         }
     }
 
@@ -281,6 +288,7 @@ pub fn run_batch_validation(
                 continue;
             }
             let Ok(mut reader) = entry.extract_from(&mut file, &MegReadOptions::default()) else {
+                report.skipped_count += 1;
                 continue;
             };
             let mut buf = Vec::with_capacity(entry.size() as usize);
@@ -291,11 +299,60 @@ pub fn run_batch_validation(
                     entry_name: entry_str.to_owned(),
                 };
                 check_buffer(&buf, disp, src);
+            } else {
+                report.skipped_count += 1;
             }
         }
     }
 
     report
+}
+
+/// Discovers candidate Petroglyph `GameData` directories from environment variables
+/// (`EAW_GAME_DATA`, `EAW_DATA_DIR`), standard Steam library paths, and workspace-relative paths.
+pub fn detect_default_gamedata_dirs() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    for var in ["EAW_GAME_DATA", "EAW_DATA_DIR"] {
+        if let Some(val) = std::env::var_os(var)
+            && !val.is_empty()
+        {
+            candidates.push(PathBuf::from(val));
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for steam_root in [
+            home.join(".local/share/Steam/steamapps/common/Star Wars Empire at War"),
+            home.join(".steam/steam/steamapps/common/Star Wars Empire at War"),
+        ] {
+            candidates.push(steam_root.join("GameData/Data"));
+            candidates.push(steam_root.join("corruption/Data"));
+        }
+    }
+
+    for rel in [
+        "Star Wars Empire at War/GameData/Data",
+        "Star Wars Empire at War/corruption/Data",
+        "../Star Wars Empire at War/GameData/Data",
+        "../Star Wars Empire at War/corruption/Data",
+        "GameData/Data",
+    ] {
+        candidates.push(PathBuf::from(rel));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut found = Vec::new();
+    for path in candidates {
+        if path.is_dir() {
+            let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if seen.insert(key) {
+                found.push(path);
+            }
+        }
+    }
+    found
 }
 
 fn collect_dir_files(
@@ -329,16 +386,14 @@ fn collect_dir_files(
     }
 }
 
-/// Helper to load a schema from disk.
-pub fn load_schema_from_path(path: &Path) -> anyhow::Result<Schema> {
-    let yaml = std::fs::read_to_string(path)
-        .with_context(|| format!("reading schema file {}", path.display()))?;
-    let schema = Schema::from_yaml_str(&yaml)
-        .with_context(|| format!("parsing YAML schema {}", path.display()))?;
-    Ok(schema)
+/// Loads and resolves a [`Schema`] and its imports from a [`SchemaRef`].
+pub fn load_schema_from_ref(schema_ref: &SchemaRef) -> anyhow::Result<(Schema, ResolvedSchema)> {
+    let resolved = SchemaLoader::load(schema_ref)
+        .with_context(|| format!("loading schema reference `{schema_ref}`"))?;
+    Ok((resolved.root_schema().clone(), resolved))
 }
 
-/// Helper to save a schema to disk.
+/// Serializes `schema` to YAML and writes it to `path`.
 pub fn save_schema_to_path(schema: &Schema, path: &Path) -> anyhow::Result<()> {
     if path.as_os_str().is_empty() {
         bail!("Schema file path is empty");
@@ -352,45 +407,105 @@ pub fn save_schema_to_path(schema: &Schema, path: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
-    use petro_chunked_schema::dynamic::{LoadOptions, load_dynamic_file};
-    use petro_chunked_schema::known_formats;
+
+    struct TempDirGuard(PathBuf);
+
+    impl TempDirGuard {
+        fn new(prefix: &str) -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "petro_editor_gamedata_{prefix}_{}_{id}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+
+        fn path(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_chunk(id: u32, is_container: bool, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + payload.len());
+        out.extend_from_slice(&id.to_le_bytes());
+        let mut size = payload.len() as u32;
+        if is_container {
+            size |= 0x8000_0000;
+        }
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn make_particle_alo() -> Vec<u8> {
+        let mut sys = Vec::new();
+        sys.extend(make_chunk(0x0000, false, b"Fx\0"));
+        sys.extend(make_chunk(0x0001, false, &1u32.to_le_bytes()));
+        sys.extend(make_chunk(0x0800, true, &[]));
+        make_chunk(0x0900, true, &sys)
+    }
+
+    fn make_model_alo() -> Vec<u8> {
+        let mut skel_hdr = Vec::from(0u32.to_le_bytes());
+        skel_hdr.extend_from_slice(&[0u8; 124]);
+        let skel = make_chunk(0x0201, false, &skel_hdr);
+        make_chunk(0x0200, true, &skel)
+    }
 
     #[test]
-    fn test_in_memory_meg_archive_discovery_and_loading() {
-        let eaw_data = PathBuf::from(
-            "/var/home/slopbot/Projects/eaw/Star Wars Empire at War/GameData/Data",
-        );
-        if !eaw_data.exists() {
-            // Skip when game assets aren't present on the test machine
+    fn test_discover_and_batch_validate_loose_files() {
+        let tmp = TempDirGuard::new("batch");
+        std::fs::write(tmp.path().join("fx.alo"), make_particle_alo()).unwrap();
+        std::fs::write(tmp.path().join("ship.alo"), make_model_alo()).unwrap();
+        std::fs::write(tmp.path().join("broken.alo"), b"BAD!").unwrap();
+
+        let dirs = vec![tmp.path().clone()];
+        let found = discover_files(&dirs, Some("alo"), "", 50);
+        assert_eq!(found.len(), 3);
+
+        // Unified `Alo` passes both particle and model, rejects `broken.alo`, skips none.
+        let (_, alo) = load_schema_from_ref(&SchemaRef::Builtin("Alo".to_owned())).unwrap();
+        let report_alo = run_batch_validation(&alo, &dirs, "alo");
+        assert_eq!(report_alo.total_checked, 3);
+        assert_eq!(report_alo.passed_count, 2);
+        assert_eq!(report_alo.failed_count, 1);
+        assert_eq!(report_alo.skipped_count, 0);
+
+        // `AloParticle` passes ONLY `fx.alo` and fails `ship.alo` + `broken.alo` (non-overlapping).
+        let (_, particle) =
+            load_schema_from_ref(&SchemaRef::Builtin("AloParticle".to_owned())).unwrap();
+        let report_p = run_batch_validation(&particle, &dirs, "alo");
+        assert_eq!(report_p.total_checked, 3);
+        assert_eq!(report_p.passed_count, 1);
+        assert_eq!(report_p.failed_count, 2);
+        assert_eq!(report_p.skipped_count, 0);
+    }
+
+    #[test]
+    fn test_env_gated_meg_archive_discovery_and_loading() {
+        let Some(dir) = std::env::var_os("EAW_GAME_DATA_DIR") else {
             return;
-        }
-        let dirs = vec![eaw_data];
-
-        // 1. Discover .alo files inside .meg archives
-        let alo_files = discover_files(&dirs, Some("alo"), "", 10);
-        assert!(!alo_files.is_empty(), "Expected to find .alo entries in Models.meg");
-        let first_alo = &alo_files[0];
-        assert!(matches!(first_alo.source, FileSource::MegEntry { .. }));
-
-        // 2. Load the .alo entry directly into memory without extracting to disk
-        let bytes = load_file_bytes(&first_alo.source).expect("load_file_bytes from .meg");
-        assert_eq!(bytes.len() as u64, first_alo.size);
-
-        // 3. Validate with known_formats::alo_model() or alo_particle()
-        let is_particle = bytes.len() >= 8
-            && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == 0x0900;
-        let schema = if is_particle {
-            known_formats::alo_particle()
-        } else {
-            known_formats::alo_model()
         };
-        let df = load_dynamic_file(&bytes, Some(&schema), &LoadOptions::default()).unwrap();
-        assert!(
-            df.diagnostics.is_empty(),
-            "Unexpected diagnostics on {}: {:?}",
-            first_alo.display_name,
-            df.diagnostics
-        );
+        let dirs = vec![PathBuf::from(dir)];
+        let alo_files = discover_files(&dirs, Some("alo"), "", 5);
+        assert!(!alo_files.is_empty());
+
+        let bytes = load_file_bytes(&alo_files[0].source).expect("load_file_bytes");
+        assert_eq!(bytes.len() as u64, alo_files[0].size);
+
+        let (_, alo) = load_schema_from_ref(&SchemaRef::Builtin("Alo".to_owned())).unwrap();
+        assert!(validate_bytes(&alo, &bytes).is_ok());
     }
 }

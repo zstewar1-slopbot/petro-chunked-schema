@@ -14,6 +14,7 @@
 //! - Interactive tools to name chunks/mini-chunks, configure container ordering (`map` vs `sequence`),
 //!   set cardinality (`required`, `optional`, `repeated`, `default`), and build `ByteBlock` structs.
 
+mod cli;
 mod editor_ops;
 mod gamedata;
 mod state;
@@ -21,173 +22,44 @@ mod state;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use clap::Parser;
 use freya::prelude::*;
 use petro_chunked_schema::codegen::generate_rust_code;
 use petro_chunked_schema::dynamic::{
     ByteSpanAnnotation, DynamicFile, LoadOptions, inspect_bytes_at_offset, load_dynamic_file,
 };
 use petro_chunked_schema::known_formats;
+use petro_chunked_schema::resolve::{ResolvedSchema, SchemaLoader};
 use petro_chunked_schema::schema::{
     ByteFieldDef, Cardinality, ChunkFieldSource, ChunkPayloadSpec, DataType, OrderMode, Schema,
     TypeDef, WireFormat,
 };
+use petro_chunked_schema::source::SchemaRef;
 
+use crate::cli::CliOutcome;
 use crate::editor_ops::{
     ParentContainerRef, SelectedNodeDetails, append_field_to_node_byte_block, build_flat_tree,
     find_existing_chunk_field, find_existing_mini_chunk_field, resolve_selected_node,
     to_pascal_case, upsert_chunk_field, upsert_mini_chunk_field,
 };
 use crate::gamedata::{
-    BatchValidationReport, DiscoveredFile, discover_files, load_file_bytes, load_schema_from_path,
-    run_batch_validation, save_schema_to_path,
+    BatchValidationReport, DiscoveredFile, detect_default_gamedata_dirs, discover_files,
+    load_file_bytes, load_schema_from_ref, run_batch_validation, save_schema_to_path,
 };
-use crate::state::{ActiveSchemaSource, FileSource, PersistedState};
-
-/// Command-line arguments for `petro-chunked-schema-editor`.
-#[derive(Debug, Parser)]
-#[command(
-    name = "petro-chunked-schema-editor",
-    about = "Freya-based visual schema editor and hex inspector for Petroglyph chunked binary files"
-)]
-struct CliArgs {
-    /// Open a specific chunked binary file on launch.
-    #[arg(long)]
-    file: Option<PathBuf>,
-
-    /// Load a YAML schema file from disk on launch.
-    #[arg(long)]
-    schema: Option<PathBuf>,
-
-    /// Load a built-in schema on launch (`AloModel`, `AloParticle`, or `AlaAnimation`).
-    #[arg(long)]
-    builtin_schema: Option<String>,
-
-    /// Add one or more `GameData` directories for browsing `.meg` archives and batch validation.
-    #[arg(long = "game-data")]
-    game_data: Vec<PathBuf>,
-
-    /// Run headless batch validation over all files with this extension (e.g. `alo` or `ala`) across
-    /// configured `GameData` directories and exit.
-    #[arg(long)]
-    validate: Option<String>,
-
-    /// Print the generated `petro-chunked-derive` Rust code for the active schema to stdout and exit.
-    #[arg(long)]
-    emit_rust: bool,
-}
-
-fn load_builtin_schema(name: &str) -> Option<Schema> {
-    if name.eq_ignore_ascii_case("AloModel") || name.eq_ignore_ascii_case("alo_model") {
-        Some(known_formats::alo_model())
-    } else if name.eq_ignore_ascii_case("AloParticle") || name.eq_ignore_ascii_case("alo_particle")
-    {
-        Some(known_formats::alo_particle())
-    } else if name.eq_ignore_ascii_case("AlaAnimation")
-        || name.eq_ignore_ascii_case("ala_animation")
-    {
-        Some(known_formats::ala_animation())
-    } else {
-        None
-    }
-}
+use crate::state::{FileSource, PersistedState};
 
 fn main() -> anyhow::Result<()> {
-    let args = CliArgs::parse();
-    let mut persisted = PersistedState::load();
-
-    // Apply any CLI overrides to persisted state
-    for dir in &args.game_data {
-        if !persisted.game_data_dirs.contains(dir) {
-            persisted.game_data_dirs.push(dir.clone());
-        }
-    }
-    if let Some(file_path) = &args.file {
-        persisted.last_file = Some(FileSource::Disk {
-            path: file_path.clone(),
-        });
-    }
-    if let Some(builtin) = &args.builtin_schema {
-        if let Some(s) = load_builtin_schema(builtin) {
-            persisted.schema_source = ActiveSchemaSource::Builtin {
-                name: s.name.clone(),
-            };
-            persisted.current_schema_yaml = s.to_yaml_string().ok();
-        } else {
-            anyhow::bail!(
-                "Unknown built-in schema `{builtin}` (expected AloModel, AloParticle, or AlaAnimation)"
+    match cli::run_cli()? {
+        CliOutcome::ExitSuccess => Ok(()),
+        CliOutcome::ExitFailure => std::process::exit(1),
+        CliOutcome::LaunchGui => {
+            launch_cfg(
+                app,
+                LaunchConfig::<()>::new()
+                    .with_size(1480.0, 920.0)
+                    .with_title("Petro Chunked Schema Editor"),
             );
+            Ok(())
         }
-    }
-    if let Some(schema_path) = &args.schema {
-        let s = load_schema_from_path(schema_path)?;
-        persisted.schema_source = ActiveSchemaSource::File {
-            path: schema_path.clone(),
-        };
-        persisted.current_schema_yaml = s.to_yaml_string().ok();
-    }
-    persisted.save();
-
-    // Resolve active schema for headless commands
-    let active_schema = resolve_initial_schema(&persisted);
-
-    if args.emit_rust {
-        let code = generate_rust_code(&active_schema);
-        println!("{code}");
-        return Ok(());
-    }
-
-    if let Some(ext) = &args.validate {
-        let report = run_batch_validation(&active_schema, &persisted.game_data_dirs, ext);
-        println!(
-            "Batch Validation for schema `{}` on `.{}` across {} GameData dir(s):",
-            report.schema_name,
-            report.extension,
-            persisted.game_data_dirs.len()
-        );
-        println!(
-            "  Checked: {} | Passed: {} | Failed: {} | Skipped: {}",
-            report.total_checked, report.passed_count, report.failed_count, report.skipped_count
-        );
-        for fail in &report.failures {
-            println!("  FAIL: {}", fail.display_name);
-            for d in fail.diagnostics.iter().take(5) {
-                println!(
-                    "    - [{} @ 0x{:X}] {}",
-                    d.tree_path, d.file_offset, d.message
-                );
-            }
-        }
-        if report.failed_count > 0 {
-            std::process::exit(1);
-        }
-        return Ok(());
-    }
-
-    // Launch the Freya GUI
-    launch_cfg(
-        app,
-        LaunchConfig::<()>::new()
-            .with_size(1480.0, 920.0)
-            .with_title("Petro Chunked Schema Editor"),
-    );
-    Ok(())
-}
-
-fn resolve_initial_schema(persisted: &PersistedState) -> Schema {
-    if let Some(yaml) = &persisted.current_schema_yaml
-        && let Ok(s) = Schema::from_yaml_str(yaml)
-    {
-        return s;
-    }
-    match &persisted.schema_source {
-        ActiveSchemaSource::Builtin { name } => {
-            load_builtin_schema(name).unwrap_or_else(known_formats::alo_model)
-        }
-        ActiveSchemaSource::File { path } => {
-            load_schema_from_path(path).unwrap_or_else(|_| known_formats::alo_model())
-        }
-        ActiveSchemaSource::Custom => known_formats::alo_model(),
     }
 }
 
@@ -225,10 +97,11 @@ fn span_bg_color(span: &ByteSpanAnnotation) -> &'static str {
 /// Root Freya application component.
 fn app() -> Element {
     let initial_persisted = use_hook(PersistedState::load);
-    let initial_schema = use_hook(|| resolve_initial_schema(&initial_persisted));
+    let (initial_schema, initial_resolved) = use_hook(|| initial_persisted.resolve_initial_schema());
 
     let mut persisted = use_signal(|| initial_persisted.clone());
     let mut schema = use_signal(|| initial_schema.clone());
+    let mut resolved_schema = use_signal(|| initial_resolved.clone());
     let mut raw_file_bytes = use_signal(Vec::<u8>::new);
     let mut dynamic_file = use_signal(|| None::<DynamicFile>);
     let mut status_msg = use_signal(|| "Ready.".to_owned());
@@ -262,7 +135,7 @@ fn app() -> Element {
     // Modal state signals: Rust codegen & YAML load/save
     let mut rust_save_path_input = use_signal(|| "generated_format.rs".to_owned());
     let mut yaml_file_path_input = use_signal(|| {
-        if let ActiveSchemaSource::File { path } = &initial_persisted.schema_source {
+        if let Some(SchemaRef::File(path)) = &initial_persisted.schema_ref {
             path.display().to_string()
         } else {
             "custom_schema.yaml".to_owned()
@@ -288,10 +161,10 @@ fn app() -> Element {
         if let Some(src) = &initial_persisted.last_file {
             match load_file_bytes(src) {
                 Ok(bytes) => {
-                    let opts = LoadOptions {
-                        force_plain_data_paths: initial_persisted.force_plain_data_paths.clone(),
-                    };
-                    match load_dynamic_file(&bytes, Some(&initial_schema), &opts) {
+                    let opts = LoadOptions::for_ui(
+                        initial_persisted.forced_plain_paths_for(Some(src)),
+                    );
+                    match load_dynamic_file(&bytes, Some(&initial_resolved), &opts) {
                         Ok(df) => {
                             status_msg.set(format!(
                                 "Restored {} ({} bytes, {} diagnostics)",
@@ -317,6 +190,14 @@ fn app() -> Element {
     // Helper closure to re-evaluate the currently loaded file bytes against the current schema
     // and save PersistedState.
     let mut refresh_and_persist = move |new_schema: Schema, msg: String| {
+        let base_ref = persisted.read().schema_ref.clone();
+        let res = match SchemaLoader::resolve(new_schema.clone(), base_ref.as_ref()) {
+            Ok(r) => r,
+            Err(e) => {
+                status_msg.set(format!("Schema resolution error: {e}"));
+                return;
+            }
+        };
         if let Ok(yaml) = new_schema.to_yaml_string() {
             raw_yaml_editor_text.set(yaml.clone());
             persisted.write().current_schema_yaml = Some(yaml);
@@ -325,13 +206,13 @@ fn app() -> Element {
 
         let bytes = raw_file_bytes.read();
         if !bytes.is_empty() {
-            let opts = LoadOptions {
-                force_plain_data_paths: persisted.read().force_plain_data_paths.clone(),
-            };
-            if let Ok(df) = load_dynamic_file(&bytes, Some(&new_schema), &opts) {
+            let p_ref = persisted.read();
+            let opts = LoadOptions::for_ui(p_ref.forced_plain_paths_for(p_ref.last_file.as_ref()));
+            if let Ok(df) = load_dynamic_file(&bytes, Some(&res), &opts) {
                 dynamic_file.set(Some(df));
             }
         }
+        resolved_schema.set(res);
         schema.set(new_schema);
         status_msg.set(msg);
     };
@@ -340,11 +221,11 @@ fn app() -> Element {
     let mut open_file_source = move |src: FileSource| {
         match load_file_bytes(&src) {
             Ok(bytes) => {
-                let cur_schema = schema.read().clone();
-                let opts = LoadOptions {
-                    force_plain_data_paths: persisted.read().force_plain_data_paths.clone(),
-                };
-                match load_dynamic_file(&bytes, Some(&cur_schema), &opts) {
+                let cur_resolved = resolved_schema.read().clone();
+                let opts = LoadOptions::for_ui(
+                    persisted.read().forced_plain_paths_for(Some(&src)),
+                );
+                match load_dynamic_file(&bytes, Some(&cur_resolved), &opts) {
                     Ok(df) => {
                         let diag_count = df.diagnostics.len();
                         let len = bytes.len();
@@ -373,13 +254,14 @@ fn app() -> Element {
     };
 
     // Populate the right-pane form whenever a user selects a new node in the tree
-    let mut populate_form_for_node = move |node: &SelectedNodeDetails, cur_schema: &Schema| {
-        if node.is_mini_chunk {
-            if let Some(existing) = find_existing_mini_chunk_field(
-                cur_schema,
-                &node.parent_container,
-                node.id as u8,
-            ) {
+    let mut populate_form_for_node =
+        move |node: &SelectedNodeDetails, cur_resolved: &ResolvedSchema| {
+            if node.is_mini_chunk {
+                if let Some(existing) = find_existing_mini_chunk_field(
+                    cur_resolved,
+                    &node.parent_container,
+                    node.id as u8,
+                ) {
                 edit_field_name.set(existing.name.clone());
                 edit_cardinality.set(existing.cardinality.clone());
                 edit_payload_type_str.set(existing.ty.label());
@@ -404,7 +286,7 @@ fn app() -> Element {
                 edit_wire_format.set(None);
             }
         } else if let Some(existing) =
-            find_existing_chunk_field(cur_schema, &node.parent_container, node.id)
+            find_existing_chunk_field(cur_resolved, &node.parent_container, node.id)
         {
             edit_field_name.set(existing.name.clone());
             edit_cardinality.set(existing.cardinality.clone());
@@ -453,6 +335,7 @@ fn app() -> Element {
     // Snapshot current state for rendering
     let cur_persisted = persisted.read().clone();
     let cur_schema = schema.read().clone();
+    let cur_resolved = resolved_schema.read().clone();
     let cur_df = dynamic_file.read().clone();
     let cur_tree_path = selected_tree_path.read().clone();
     let cur_collapsed = collapsed_paths.read().clone();
@@ -462,7 +345,7 @@ fn app() -> Element {
 
     let selected_node = cur_df
         .as_ref()
-        .and_then(|df| resolve_selected_node(df, &cur_schema, &cur_tree_path));
+        .and_then(|df| resolve_selected_node(df, &cur_resolved, &cur_tree_path));
 
     let flat_tree = cur_df
         .as_ref()
@@ -521,8 +404,16 @@ fn app() -> Element {
                 // Built-in Schema presets
                 Button {
                     onpress: move |_| {
+                        let s = known_formats::alo();
+                        persisted.write().schema_ref = Some(SchemaRef::Builtin("Alo".to_owned()));
+                        refresh_and_persist(s, "Switched to built-in Alo schema".to_owned());
+                    },
+                    label { "Schema: Alo" }
+                }
+                Button {
+                    onpress: move |_| {
                         let s = known_formats::alo_model();
-                        persisted.write().schema_source = ActiveSchemaSource::Builtin { name: "AloModel".to_owned() };
+                        persisted.write().schema_ref = Some(SchemaRef::Builtin("AloModel".to_owned()));
                         refresh_and_persist(s, "Switched to built-in AloModel schema".to_owned());
                     },
                     label { "Schema: AloModel" }
@@ -530,7 +421,7 @@ fn app() -> Element {
                 Button {
                     onpress: move |_| {
                         let s = known_formats::alo_particle();
-                        persisted.write().schema_source = ActiveSchemaSource::Builtin { name: "AloParticle".to_owned() };
+                        persisted.write().schema_ref = Some(SchemaRef::Builtin("AloParticle".to_owned()));
                         refresh_and_persist(s, "Switched to built-in AloParticle schema".to_owned());
                     },
                     label { "Schema: AloParticle" }
@@ -538,7 +429,7 @@ fn app() -> Element {
                 Button {
                     onpress: move |_| {
                         let s = known_formats::ala_animation();
-                        persisted.write().schema_source = ActiveSchemaSource::Builtin { name: "AlaAnimation".to_owned() };
+                        persisted.write().schema_ref = Some(SchemaRef::Builtin("AlaAnimation".to_owned()));
                         refresh_and_persist(s, "Switched to built-in AlaAnimation schema".to_owned());
                     },
                     label { "Schema: AlaAnimation" }
@@ -546,7 +437,7 @@ fn app() -> Element {
                 Button {
                     onpress: move |_| {
                         let s = Schema::new_empty("CustomFormat");
-                        persisted.write().schema_source = ActiveSchemaSource::Custom;
+                        persisted.write().schema_ref = None;
                         refresh_and_persist(s, "Started a blank CustomFormat schema".to_owned());
                     },
                     label { "+ Blank Schema" }
@@ -783,15 +674,9 @@ fn app() -> Element {
                         }
                         Button {
                             onpress: move |_| {
-                                // Quick-add workspace EAW & FoC GameData paths if present
-                                let defaults = [
-                                    "/var/home/slopbot/Projects/eaw/Star Wars Empire at War/GameData/Data",
-                                    "/var/home/slopbot/Projects/eaw/Star Wars Empire at War/corruption/Data",
-                                ];
                                 let mut p = persisted.write();
-                                for d in defaults {
-                                    let pb = PathBuf::from(d);
-                                    if pb.exists() && !p.game_data_dirs.contains(&pb) {
+                                for pb in detect_default_gamedata_dirs() {
+                                    if !p.game_data_dirs.contains(&pb) {
                                         p.game_data_dirs.push(pb);
                                     }
                                 }
@@ -868,8 +753,8 @@ fn app() -> Element {
                                 p.save();
                                 let dirs = p.game_data_dirs.clone();
                                 drop(p);
-                                let cur_s = schema.read().clone();
-                                let rep = run_batch_validation(&cur_s, &dirs, &ext);
+                                let cur_r = resolved_schema.read().clone();
+                                let rep = run_batch_validation(&cur_r, &dirs, &ext);
                                 status_msg.set(format!(
                                     "Batch validation on .{}: {}/{} passed ({} failed, {} skipped)",
                                     rep.extension, rep.passed_count, rep.total_checked, rep.failed_count, rep.skipped_count
@@ -932,7 +817,8 @@ fn app() -> Element {
 
             if cur_modal == ActiveModal::RustCodegen {
                 {
-                    let generated_code = generate_rust_code(&cur_schema);
+                    let generated_code = generate_rust_code(&cur_resolved)
+                        .unwrap_or_else(|e| format!("// Codegen error: {e}"));
                     rsx! {
                         rect {
                             width: "fill",
@@ -959,10 +845,12 @@ fn app() -> Element {
                                 Button {
                                     onpress: move |_| {
                                         let path = PathBuf::from(rust_save_path_input.read().trim());
-                                        let code = generate_rust_code(&schema.read());
-                                        match std::fs::write(&path, code) {
-                                            Ok(()) => status_msg.set(format!("Saved Rust code to {}", path.display())),
-                                            Err(e) => status_msg.set(format!("Failed to write Rust code: {e}")),
+                                        match generate_rust_code(&resolved_schema.read()) {
+                                            Ok(code) => match std::fs::write(&path, code) {
+                                                Ok(()) => status_msg.set(format!("Saved Rust code to {}", path.display())),
+                                                Err(e) => status_msg.set(format!("Failed to write Rust code: {e}")),
+                                            },
+                                            Err(e) => status_msg.set(format!("Codegen error: {e}")),
                                         }
                                     },
                                     label { "Save .rs File" }
@@ -1012,16 +900,19 @@ fn app() -> Element {
                         }
                         Button {
                             onpress: move |_| {
-                                let p = PathBuf::from(yaml_file_path_input.read().trim());
-                                match load_schema_from_path(&p) {
-                                    Ok(loaded) => {
-                                        persisted.write().schema_source = ActiveSchemaSource::File { path: p.clone() };
-                                        refresh_and_persist(loaded, format!("Loaded schema from {}", p.display()));
-                                    }
-                                    Err(e) => status_msg.set(format!("Error loading YAML schema: {e}")),
+                                let raw = yaml_file_path_input.read().trim().to_owned();
+                                match SchemaRef::parse(&raw) {
+                                    Ok(sref) => match load_schema_from_ref(&sref) {
+                                        Ok((loaded, _)) => {
+                                            persisted.write().schema_ref = Some(sref.clone());
+                                            refresh_and_persist(loaded, format!("Loaded schema `{sref}`"));
+                                        }
+                                        Err(e) => status_msg.set(format!("Error loading YAML schema: {e}")),
+                                    },
+                                    Err(e) => status_msg.set(format!("Invalid schema reference: {e}")),
                                 }
                             },
-                            label { "Load YAML File" }
+                            label { "Load YAML / Ref" }
                         }
                         Button {
                             onpress: move |_| {
@@ -1029,7 +920,7 @@ fn app() -> Element {
                                 let cur_s = schema.read().clone();
                                 match save_schema_to_path(&cur_s, &p) {
                                     Ok(()) => {
-                                        persisted.write().schema_source = ActiveSchemaSource::File { path: p.clone() };
+                                        persisted.write().schema_ref = Some(SchemaRef::File(p.clone()));
                                         persisted.read().save();
                                         status_msg.set(format!("Saved schema YAML to {}", p.display()));
                                     }
@@ -1178,9 +1069,9 @@ fn app() -> Element {
                                                 selected_byte_offset.set(0);
                                                 hex_page.set(0);
                                                 if let Some(df) = dynamic_file.read().as_ref() {
-                                                    let s = schema.read().clone();
-                                                    if let Some(nd) = resolve_selected_node(df, &s, &row_path) {
-                                                        populate_form_for_node(&nd, &s);
+                                                    let r = resolved_schema.read().clone();
+                                                    if let Some(nd) = resolve_selected_node(df, &r, &row_path) {
+                                                        populate_form_for_node(&nd, &r);
                                                     }
                                                 }
                                             },
@@ -1266,7 +1157,8 @@ fn app() -> Element {
                     if let Some(node) = &selected_node {
                         {
                             let node_path = node.tree_path.clone();
-                            let is_forced_plain = cur_persisted.force_plain_data_paths.contains(&node_path);
+                            let forced_set = cur_persisted.forced_plain_paths_for(cur_persisted.last_file.as_ref());
+                            let is_forced_plain = forced_set.contains(&node_path);
                             let total_bytes = node.raw_bytes.len();
                             let assigned_bytes: usize = node
                                 .spans
@@ -1339,12 +1231,14 @@ fn app() -> Element {
                                     if !node.is_container && !node.is_mini_chunk && (node.looks_like_mini_chunks || is_forced_plain) {
                                         Button {
                                             onpress: move |_| {
-                                                let mut p = persisted.write();
-                                                if !p.force_plain_data_paths.remove(&node_path) {
-                                                    p.force_plain_data_paths.insert(node_path.clone());
-                                                }
-                                                let now_forced = p.force_plain_data_paths.contains(&node_path);
-                                                drop(p);
+                                                let now_forced = {
+                                                    let mut p = persisted.write();
+                                                    if let Some(src) = p.last_file.clone() {
+                                                        p.toggle_forced_plain_path(&src, &node_path)
+                                                    } else {
+                                                        false
+                                                    }
+                                                };
                                                 let cur_s = schema.read().clone();
                                                 refresh_and_persist(
                                                     cur_s,
@@ -1631,9 +1525,11 @@ fn app() -> Element {
                                                             Button {
                                                                 onpress: move |_| {
                                                                     let mut s = schema.read().clone();
+                                                                    let r = resolved_schema.read().clone();
                                                                     let fname = new_bb_field_name.read().clone();
                                                                     match append_field_to_node_byte_block(
                                                                         &mut s,
+                                                                        &r,
                                                                         &node_clone,
                                                                         &fname,
                                                                         dt.clone(),
@@ -1722,15 +1618,18 @@ fn app() -> Element {
                                     // Inspect parent container mode & ignore_unknown
                                     let parent_summary = match &parent_ref {
                                         ParentContainerRef::Root => {
-                                            Some((
-                                                "root (Top-Level File Container)".to_owned(),
-                                                cur_schema.root.mode,
-                                                cur_schema.root.ignore_unknown,
-                                            ))
+                                            match cur_schema.root_type() {
+                                                Some(TypeDef::Chunks(c)) => Some((
+                                                    format!("root (`{}`)", cur_schema.root),
+                                                    c.mode,
+                                                    c.ignore_unknown,
+                                                )),
+                                                _ => None,
+                                            }
                                         }
                                         ParentContainerRef::ChunksType { type_name } => {
                                             match cur_schema.types.get(type_name) {
-                                                Some(TypeDef::Chunks(c) | TypeDef::ChunkStreamSeq(c)) => {
+                                                Some(TypeDef::Chunks(c)) => {
                                                     Some((format!("Chunks `{type_name}`"), c.mode, c.ignore_unknown))
                                                 }
                                                 _ => None,
@@ -1744,7 +1643,9 @@ fn app() -> Element {
                                                 _ => None,
                                             }
                                         }
-                                        ParentContainerRef::UnassignedParentChunk { .. } => {
+                                        ParentContainerRef::ChunkEnumType { .. }
+                                        | ParentContainerRef::Imported { .. }
+                                        | ParentContainerRef::UnassignedParentChunk { .. } => {
                                             None
                                         }
                                     };
@@ -1783,9 +1684,13 @@ fn app() -> Element {
                                                                         OrderMode::Map
                                                                     };
                                                                     match &p_ref_mode {
-                                                                        ParentContainerRef::Root => s.root.mode = next_mode,
+                                                                        ParentContainerRef::Root => {
+                                                                            if let Some(TypeDef::Chunks(c)) = s.root_type_mut() {
+                                                                                c.mode = next_mode;
+                                                                            }
+                                                                        }
                                                                         ParentContainerRef::ChunksType { type_name } => {
-                                                                            if let Some(TypeDef::Chunks(c) | TypeDef::ChunkStreamSeq(c)) = s.types.get_mut(type_name) {
+                                                                            if let Some(TypeDef::Chunks(c)) = s.types.get_mut(type_name) {
                                                                                 c.mode = next_mode;
                                                                             }
                                                                         }
@@ -1808,9 +1713,13 @@ fn app() -> Element {
                                                                     let mut s = schema.read().clone();
                                                                     let next_ign = !p_ignore;
                                                                     match &p_ref_ign {
-                                                                        ParentContainerRef::Root => s.root.ignore_unknown = next_ign,
+                                                                        ParentContainerRef::Root => {
+                                                                            if let Some(TypeDef::Chunks(c)) = s.root_type_mut() {
+                                                                                c.ignore_unknown = next_ign;
+                                                                            }
+                                                                        }
                                                                         ParentContainerRef::ChunksType { type_name } => {
-                                                                            if let Some(TypeDef::Chunks(c) | TypeDef::ChunkStreamSeq(c)) = s.types.get_mut(type_name) {
+                                                                            if let Some(TypeDef::Chunks(c)) = s.types.get_mut(type_name) {
                                                                                 c.ignore_unknown = next_ign;
                                                                             }
                                                                         }
@@ -1995,7 +1904,7 @@ fn app() -> Element {
                                                                 dt,
                                                                 wf,
                                                             ),
-                                                            Err(e) => Err(e),
+                                                            Err(e) => Err(e.to_string()),
                                                         }
                                                     } else {
                                                         let pkind = edit_chunk_payload_kind.read().clone();
@@ -2015,7 +1924,7 @@ fn app() -> Element {
                                                                 spec,
                                                                 wf,
                                                             ),
-                                                            Err(e) => Err(e),
+                                                            Err(e) => Err(e.to_string()),
                                                         }
                                                     };
 
@@ -2032,11 +1941,12 @@ fn app() -> Element {
                                         }
 
                                         // 3. Active ByteBlock Struct Fields Editor
-                                        if let Some(bb_name) = &node.active_byte_block_type {
+                                        if let Some(bb_name) = node.editable_byte_block() {
                                             if let Some(TypeDef::ByteBlock(bb_def)) = cur_schema.types.get(bb_name) {
                                                 {
-                                                    let bb_name_clone = bb_name.clone();
-                                                    let bb_name_add = bb_name.clone();
+                                                    let bb_name_clone = bb_name.to_owned();
+                                                    let bb_name_add = bb_name.to_owned();
+                                                    let bb_name_label = bb_name.to_owned();
                                                     rsx! {
                                                         rect {
                                                             width: "fill",
@@ -2067,7 +1977,7 @@ fn app() -> Element {
                                                                             .map(|p| format!(" [+{p}B pad]"))
                                                                             .unwrap_or_default()
                                                                     );
-                                                                    let bb_del = bb_name.clone();
+                                                                    let bb_del = bb_name_clone.clone();
                                                                     rsx! {
                                                                         rect {
                                                                             padding: "2 4",
@@ -2144,7 +2054,7 @@ fn app() -> Element {
                                                                         Err(e) => status_msg.set(format!("Invalid DataType `{fty_str}`: {e}")),
                                                                     }
                                                                 },
-                                                                label { "+ Append Field to {bb_name}" }
+                                                                label { "+ Append Field to {bb_name_label}" }
                                                             }
                                                         }
                                                     }

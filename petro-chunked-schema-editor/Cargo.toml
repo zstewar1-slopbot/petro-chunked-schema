@@ -10,7 +10,7 @@ anyhow.workspace = true
 clap.workspace = true
 freya = "0.3"
 petro-chunked.workspace = true
-petro-chunked-schema = { path = "../petro-chunked-schema", features = ["known-formats"] }
+petro-chunked-schema = { path = "../petro-chunked-schema", features = ["known-formats", "codegen"] }
 petro-meg.workspace = true
 serde.workspace = true
 serde_json.workspace = true

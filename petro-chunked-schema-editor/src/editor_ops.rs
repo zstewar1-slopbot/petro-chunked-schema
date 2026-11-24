@@ -1,8 +1,9 @@
 //! Tree navigation and interactive schema mutation helpers for `petro-chunked-schema-editor`.
 //!
 //! Bridges the dynamically parsed [`DynamicFile`] tree and the editable [`Schema`] definition so
-//! that users can click any chunk or mini-chunk in the tree, inspect its bytes, and interactively
-//! assign names, cardinalities, container ordering (`map` vs `sequence`), and `ByteBlock` fields.
+//! users can select any chunk or mini-chunk in the tree, inspect its bytes, and assign names,
+//! cardinalities, container ordering (`map` vs `sequence`), and `ByteBlock` fields while keeping
+//! type definitions ordered parents-before-children.
 
 use std::collections::BTreeSet;
 
@@ -10,22 +11,24 @@ use petro_chunked_schema::dynamic::{
     ByteSpanAnnotation, DynamicChunk, DynamicChunkContent, DynamicFile, DynamicMiniChunk,
     DynamicValue,
 };
+use petro_chunked_schema::resolve::{ResolvedSchema, SchemaId};
 use petro_chunked_schema::schema::{
     ByteBlockDef, ByteFieldDef, Cardinality, ChunkContainerDef, ChunkFieldDef, ChunkFieldSource,
     ChunkPayloadSpec, DataType, MiniChunkContainerDef, MiniChunkFieldDef, OrderMode, Schema,
     TypeDef, WireFormat,
 };
+use petro_chunked_schema::source::SchemaRef;
 
-/// A flattened row in the left-pane chunk & mini-chunk tree view.
+/// Flattened row in the left-pane chunk and mini-chunk tree view.
 #[derive(Debug, Clone)]
 pub struct FlatTreeRow {
     /// Unique tree path (e.g. `"0"`, `"0/1"`, `"0/1/mc2"`).
     pub tree_path: String,
     /// Indentation depth (`0` for root chunks).
     pub depth: usize,
-    /// True if this node is an 8-bit mini-chunk; false if it is a 32-bit chunk.
+    /// `true` if this node is an 8-bit mini-chunk; `false` if it is a 32-bit chunk.
     pub is_mini_chunk: bool,
-    /// Formatted ID label (`"0x00000400"` for chunks, `"mc 0x01 (1)"` for mini-chunks).
+    /// Formatted ID label (`"0x0400"` for chunks, `"mc 01 (0x01)"` for mini-chunks).
     pub id_label: String,
     /// Assigned schema field name, if matched.
     pub field_name: Option<String>,
@@ -33,11 +36,11 @@ pub struct FlatTreeRow {
     pub type_label: Option<String>,
     /// Payload size in bytes.
     pub size: usize,
-    /// Number of child chunks or mini-chunks under this node.
+    /// Number of direct child chunks or mini-chunks under this node.
     pub child_count: usize,
-    /// True if this node has children and is currently expanded in the tree view.
+    /// `true` if this node has children and is currently expanded.
     pub is_expanded: bool,
-    /// True if this node or its decoding produced any schema errors.
+    /// `true` if this node or its decoding produced any schema errors.
     pub has_error: bool,
 }
 
@@ -123,22 +126,42 @@ fn flatten_chunk(
     }
 }
 
-/// Identifies which container in the [`Schema`] holds the currently selected node.
+/// Identifies which container in the [`ResolvedSchema`] owns the currently selected node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentContainerRef {
-    /// The top-level `schema.root` chunk container.
+    /// Top-level root container when `schema.root` is a local `TypeDef::Chunks`.
     Root,
-    /// A named `TypeDef::Chunks` or `TypeDef::ChunkStreamSeq` container in `schema.types`.
+    /// Local `TypeDef::Chunks` or `TypeDef::ChunkStreamSeq` in `schema.types`.
     ChunksType {
+        /// Local type key inside `schema.types`.
         type_name: String,
     },
-    /// A named `TypeDef::MiniChunks` container in `schema.types`.
+    /// Local `TypeDef::MiniChunks` container in `schema.types`.
     MiniChunksType {
+        /// Local type key inside `schema.types`.
         type_name: String,
     },
-    /// The parent chunk does not yet have a container type assigned in the schema.
+    /// Local `TypeDef::ChunkEnum` (variants edited in YAML rather than the chunk form).
+    ChunkEnumType {
+        /// Local type key inside `schema.types`.
+        type_name: String,
+    },
+    /// Container owned by an imported schema module (read-only from the importing schema).
+    Imported {
+        /// Module ID in the resolved schema graph.
+        module_id: SchemaId,
+        /// Module alias / display prefix.
+        alias: String,
+        /// Source URI or path of the imported schema so the user can open it directly.
+        source: Option<SchemaRef>,
+        /// Type name inside the imported module.
+        type_name: String,
+    },
+    /// Parent chunk does not yet have a container type assigned in the schema.
     UnassignedParentChunk {
+        /// Tree path of the unassigned parent chunk.
         parent_tree_path: String,
+        /// 32-bit chunk ID of the unassigned parent chunk.
         parent_chunk_id: u32,
     },
 }
@@ -146,35 +169,56 @@ pub enum ParentContainerRef {
 /// Resolved details about the currently selected chunk or mini-chunk in the UI.
 #[derive(Debug, Clone)]
 pub struct SelectedNodeDetails {
+    /// Tree path identifying this node.
     pub tree_path: String,
+    /// `true` if this node is an 8-bit mini-chunk.
     pub is_mini_chunk: bool,
     /// 32-bit chunk ID (or 8-bit mini-chunk ID widened to `u32`).
     pub id: u32,
+    /// `true` if this is a 32-bit container chunk holding child chunks.
     pub is_container: bool,
+    /// `true` if this leaf chunk's payload can be segmented as mini-chunks.
     pub looks_like_mini_chunks: bool,
+    /// Absolute byte offset of the chunk/mini-chunk header.
     pub header_offset: usize,
+    /// Absolute byte offset of the payload data.
     pub payload_offset: usize,
+    /// Payload length in bytes.
     pub size: usize,
+    /// Matched schema field name, if any.
     pub schema_field_name: Option<String>,
+    /// Matched schema type label, if any.
     pub schema_type_label: Option<String>,
-    /// Raw payload bytes available for the hex editor (empty for container chunks with child chunks).
+    /// Raw payload bytes available for the hex editor.
     pub raw_bytes: Vec<u8>,
-    /// Byte span annotations within `raw_bytes`.
+    /// Byte span annotations recorded within `raw_bytes`.
     pub spans: Vec<ByteSpanAnnotation>,
-    /// Decoded value of this payload, if any.
+    /// Dynamically decoded value of this payload, if matched.
     pub decoded: Option<DynamicValue>,
     /// Errors recorded specifically on this node.
     pub errors: Vec<String>,
-    /// Where this node lives in the schema hierarchy.
+    /// Container owning this node in the schema hierarchy.
     pub parent_container: ParentContainerRef,
-    /// If this node's payload is a named `TypeDef::ByteBlock`, its type name in `schema.types`.
-    pub active_byte_block_type: Option<String>,
+    /// `(SchemaId, type_name)` when this payload maps to a named `TypeDef::ByteBlock`.
+    pub active_byte_block: Option<(SchemaId, String)>,
 }
 
-/// Looks up the node at `tree_path` in `file` and resolves its [`SelectedNodeDetails`] against `schema`.
+impl SelectedNodeDetails {
+    /// Returns the local `ByteBlock` type name if this node maps to a `ByteBlock` defined directly
+    /// in the active root schema (`SchemaId::ROOT`).
+    pub fn editable_byte_block(&self) -> Option<&str> {
+        match &self.active_byte_block {
+            Some((mod_id, name)) if *mod_id == SchemaId::ROOT => Some(name.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Looks up the node at `tree_path` in `file` and resolves its [`SelectedNodeDetails`] against
+/// `resolved`.
 pub fn resolve_selected_node(
     file: &DynamicFile,
-    schema: &Schema,
+    resolved: &ResolvedSchema,
     tree_path: &str,
 ) -> Option<SelectedNodeDetails> {
     if tree_path.is_empty() {
@@ -189,12 +233,12 @@ pub fn resolve_selected_node(
     let mut current_chunk = file.chunks.get(root_idx)?;
     let mut parent_chunk: Option<&DynamicChunk> = None;
 
-    for (seg_idx, &seg) in segments.iter().enumerate().skip(1) {
+    for &seg in segments.iter().skip(1) {
         if let Some(mc_idx_str) = seg.strip_prefix("mc") {
             let mc_idx: usize = mc_idx_str.parse().ok()?;
             if let DynamicChunkContent::MiniChunks { mini_chunks, .. } = &current_chunk.content {
                 let mc = mini_chunks.get(mc_idx)?;
-                return Some(build_mini_chunk_details(mc, current_chunk, schema));
+                return Some(build_mini_chunk_details(mc, current_chunk, resolved));
             }
             return None;
         } else {
@@ -205,23 +249,63 @@ pub fn resolve_selected_node(
             } else {
                 return None;
             }
-            let _ = seg_idx;
         }
     }
 
-    Some(build_chunk_details(current_chunk, parent_chunk, schema))
+    Some(build_chunk_details(current_chunk, parent_chunk, resolved))
+}
+
+fn imported_parent_ref(
+    resolved: &ResolvedSchema,
+    module_id: SchemaId,
+    type_name: &str,
+) -> ParentContainerRef {
+    let module = resolved.module(module_id);
+    ParentContainerRef::Imported {
+        module_id,
+        alias: module
+            .module_name
+            .clone()
+            .unwrap_or_else(|| module.schema.name.clone()),
+        source: module.source.clone(),
+        type_name: type_name.to_owned(),
+    }
+}
+
+fn resolve_byte_block_ref(
+    resolved: &ResolvedSchema,
+    mod_id: Option<SchemaId>,
+    type_ref: Option<&str>,
+) -> Option<(SchemaId, String)> {
+    let mod_id = mod_id?;
+    let tref = type_ref?;
+    if matches!(
+        resolved.module(mod_id).schema.types.get(tref),
+        Some(TypeDef::ByteBlock(_))
+    ) {
+        Some((mod_id, tref.to_owned()))
+    } else {
+        None
+    }
 }
 
 fn build_mini_chunk_details(
     mc: &DynamicMiniChunk,
     parent_chunk: &DynamicChunk,
-    schema: &Schema,
+    resolved: &ResolvedSchema,
 ) -> SelectedNodeDetails {
-    let parent_container = if let Some(type_name) = &parent_chunk.schema_type_name
-        && matches!(schema.types.get(type_name), Some(TypeDef::MiniChunks(_)))
-    {
-        ParentContainerRef::MiniChunksType {
-            type_name: type_name.clone(),
+    let parent_container = if let (Some(mod_id), Some(tname)) =
+        (parent_chunk.schema_module_id, parent_chunk.schema_type_ref.as_deref())
+        && matches!(
+            resolved.module(mod_id).schema.types.get(tname),
+            Some(TypeDef::MiniChunks(_))
+        ) {
+        if mod_id == SchemaId::ROOT {
+            ParentContainerRef::MiniChunksType {
+                type_name: tname.to_owned(),
+            }
+        } else {
+            imported_parent_ref(resolved, mod_id, tname)
         }
     } else {
         ParentContainerRef::UnassignedParentChunk {
@@ -230,35 +314,8 @@ fn build_mini_chunk_details(
         }
     };
 
-    let active_byte_block_type = match & parent_container {
-        ParentContainerRef::MiniChunksType { type_name } => {
-            if let Some(TypeDef::MiniChunks(mc_def)) = schema.types.get(type_name) {
-                mc_def
-                    .fields
-                    .iter()
-                    .find(|f| f.id == mc.id)
-                    .and_then(|f| match &f.ty {
-                        DataType::Named(n)
-                            if matches!(schema.types.get(n), Some(TypeDef::ByteBlock(_))) =>
-                        {
-                            Some(n.clone())
-                        }
-                        DataType::List(inner) => match &**inner {
-                            DataType::Named(n)
-                                if matches!(schema.types.get(n), Some(TypeDef::ByteBlock(_))) =>
-                            {
-                                Some(n.clone())
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
+    let active_byte_block =
+        resolve_byte_block_ref(resolved, mc.schema_module_id, mc.schema_type_ref.as_deref());
 
     SelectedNodeDetails {
         tree_path: mc.tree_path.clone(),
@@ -276,26 +333,52 @@ fn build_mini_chunk_details(
         decoded: mc.decoded.clone(),
         errors: mc.errors.clone(),
         parent_container,
-        active_byte_block_type,
+        active_byte_block,
     }
 }
 
 fn build_chunk_details(
     chunk: &DynamicChunk,
     parent_chunk: Option<&DynamicChunk>,
-    schema: &Schema,
+    resolved: &ResolvedSchema,
 ) -> SelectedNodeDetails {
     let parent_container = match parent_chunk {
-        None => ParentContainerRef::Root,
+        None => {
+            let (root_mod, root_name, root_def) = resolved.root_type();
+            if let Some(owner_mod) = chunk.field_owner_module_id
+                && owner_mod != SchemaId::ROOT
+            {
+                let owner_schema = &resolved.module(owner_mod).schema;
+                imported_parent_ref(resolved, owner_mod, &owner_schema.root)
+            } else if root_mod != SchemaId::ROOT {
+                imported_parent_ref(resolved, root_mod, root_name)
+            } else {
+                match root_def {
+                    TypeDef::Chunks(_) => ParentContainerRef::Root,
+                    TypeDef::ChunkStreamSeq(_) => ParentContainerRef::ChunksType {
+                        type_name: root_name.to_owned(),
+                    },
+                    TypeDef::ChunkEnum(_) => ParentContainerRef::ChunkEnumType {
+                        type_name: root_name.to_owned(),
+                    },
+                    _ => ParentContainerRef::Root,
+                }
+            }
+        }
         Some(p) => {
-            if let Some(tname) = &p.schema_type_name
+            if let (Some(mod_id), Some(tname)) =
+                (p.schema_module_id, p.schema_type_ref.as_deref())
                 && matches!(
-                    schema.types.get(tname),
+                    resolved.module(mod_id).schema.types.get(tname),
                     Some(TypeDef::Chunks(_) | TypeDef::ChunkStreamSeq(_))
                 )
             {
-                ParentContainerRef::ChunksType {
-                    type_name: tname.clone(),
+                if mod_id == SchemaId::ROOT {
+                    ParentContainerRef::ChunksType {
+                        type_name: tname.to_owned(),
+                    }
+                } else {
+                    imported_parent_ref(resolved, mod_id, tname)
                 }
             } else {
                 ParentContainerRef::UnassignedParentChunk {
@@ -318,18 +401,11 @@ fn build_chunk_details(
         } => (raw_bytes.clone(), spans.clone(), decoded.clone()),
     };
 
-    // Check if this chunk's payload references a named ByteBlock in schema.types
-    let active_byte_block_type = chunk.schema_type_name.as_ref().and_then(|label| {
-        let candidate = label
-            .strip_prefix("Vec<")
-            .and_then(|s| s.strip_suffix('>'))
-            .unwrap_or(label.as_str());
-        if matches!(schema.types.get(candidate), Some(TypeDef::ByteBlock(_))) {
-            Some(candidate.to_owned())
-        } else {
-            None
-        }
-    });
+    let active_byte_block = resolve_byte_block_ref(
+        resolved,
+        chunk.schema_module_id,
+        chunk.schema_type_ref.as_deref(),
+    );
 
     SelectedNodeDetails {
         tree_path: chunk.tree_path.clone(),
@@ -347,11 +423,11 @@ fn build_chunk_details(
         decoded,
         errors: chunk.errors.clone(),
         parent_container,
-        active_byte_block_type,
+        active_byte_block,
     }
 }
 
-/// Converts a snake_case field name into a UpperCamelCase type name.
+/// Converts a snake_case field name into an UpperCamelCase type name.
 pub fn to_pascal_case(s: &str) -> String {
     let mut out = String::new();
     for part in s.split(|c: char| !c.is_alphanumeric()) {
@@ -371,21 +447,33 @@ pub fn to_pascal_case(s: &str) -> String {
     }
 }
 
-/// Inspects the existing [`ChunkFieldDef`] for `chunk_id` inside `parent_ref`, if one is defined.
+/// Looks up the existing [`ChunkFieldDef`] for `chunk_id` inside `parent_ref`, if defined.
 pub fn find_existing_chunk_field<'a>(
-    schema: &'a Schema,
+    resolved: &'a ResolvedSchema,
     parent_ref: &ParentContainerRef,
     chunk_id: u32,
 ) -> Option<&'a ChunkFieldDef> {
-    let container = match parent_ref {
-        ParentContainerRef::Root => Some(&schema.root),
-        ParentContainerRef::ChunksType { type_name } => match schema.types.get(type_name) {
-            Some(TypeDef::Chunks(c) | TypeDef::ChunkStreamSeq(c)) => Some(c),
-            _ => None,
-        },
-        _ => None,
-    }?;
-    container.fields.iter().find(|f| {
+    let (mod_id, type_name) = match parent_ref {
+        ParentContainerRef::Root => {
+            let root_name = &resolved.root_schema().root;
+            (SchemaId::ROOT, root_name.as_str())
+        }
+        ParentContainerRef::ChunksType { type_name } => (SchemaId::ROOT, type_name.as_str()),
+        ParentContainerRef::Imported {
+            module_id,
+            type_name,
+            ..
+        } => (*module_id, type_name.as_str()),
+        _ => return None,
+    };
+
+    let fields: &[ChunkFieldDef] = match resolved.module(mod_id).schema.types.get(type_name) {
+        Some(TypeDef::Chunks(c)) => &c.fields,
+        Some(TypeDef::ChunkStreamSeq(s)) => &s.fields,
+        _ => return None,
+    };
+
+    fields.iter().find(|f| {
         matches!(
             f.source,
             ChunkFieldSource::Id { id, .. } if id == chunk_id
@@ -393,26 +481,130 @@ pub fn find_existing_chunk_field<'a>(
     })
 }
 
-/// Inspects the existing [`MiniChunkFieldDef`] for `mc_id` inside `parent_ref`, if one is defined.
+/// Looks up the existing [`MiniChunkFieldDef`] for `mc_id` inside `parent_ref`, if defined.
 pub fn find_existing_mini_chunk_field<'a>(
-    schema: &'a Schema,
+    resolved: &'a ResolvedSchema,
     parent_ref: &ParentContainerRef,
     mc_id: u8,
 ) -> Option<&'a MiniChunkFieldDef> {
-    let ParentContainerRef::MiniChunksType { type_name } = parent_ref else {
-        return None;
+    let (mod_id, type_name) = match parent_ref {
+        ParentContainerRef::MiniChunksType { type_name } => (SchemaId::ROOT, type_name.as_str()),
+        ParentContainerRef::Imported {
+            module_id,
+            type_name,
+            ..
+        } => (*module_id, type_name.as_str()),
+        _ => return None,
     };
-    let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get(type_name) else {
+    let Some(TypeDef::MiniChunks(mc_container)) =
+        resolved.module(mod_id).schema.types.get(type_name)
+    else {
         return None;
     };
     mc_container.fields.iter().find(|f| f.id == mc_id)
 }
 
+fn ensure_payload_target_type(
+    schema: &mut Schema,
+    after_key: Option<&str>,
+    payload: &ChunkPayloadSpec,
+) {
+    match payload {
+        ChunkPayloadSpec::Children(type_name) if !type_name.contains("::") => {
+            schema.insert_type_after(
+                after_key,
+                type_name.clone(),
+                TypeDef::Chunks(ChunkContainerDef {
+                    description: None,
+                    mode: OrderMode::Map,
+                    ignore_unknown: true,
+                    fields: Vec::new(),
+                }),
+            );
+        }
+        ChunkPayloadSpec::MiniChunks(type_name) if !type_name.contains("::") => {
+            schema.insert_type_after(
+                after_key,
+                type_name.clone(),
+                TypeDef::MiniChunks(MiniChunkContainerDef {
+                    description: None,
+                    mode: OrderMode::Map,
+                    ignore_unknown: true,
+                    fields: Vec::new(),
+                }),
+            );
+        }
+        ChunkPayloadSpec::Data(DataType::Named(type_name)) if !type_name.contains("::") => {
+            schema.insert_type_after(
+                after_key,
+                type_name.clone(),
+                TypeDef::ByteBlock(ByteBlockDef {
+                    description: None,
+                    fields: Vec::new(),
+                    pad_after: None,
+                }),
+            );
+        }
+        ChunkPayloadSpec::Data(DataType::List(inner)) => {
+            if let DataType::Named(type_name) = &**inner
+                && !type_name.contains("::")
+            {
+                schema.insert_type_after(
+                    after_key,
+                    type_name.clone(),
+                    TypeDef::ByteBlock(ByteBlockDef {
+                        description: None,
+                        fields: Vec::new(),
+                        pad_after: None,
+                    }),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_editable_chunk_fields<'a>(
+    schema: &'a mut Schema,
+    parent_ref: &ParentContainerRef,
+) -> Result<(String, &'a mut Vec<ChunkFieldDef>), String> {
+    let type_name = match parent_ref {
+        ParentContainerRef::Root => schema.root.clone(),
+        ParentContainerRef::ChunksType { type_name } => type_name.clone(),
+        ParentContainerRef::ChunkEnumType { type_name } => {
+            return Err(format!(
+                "Root/parent `{type_name}` is a `chunk_enum`; edit its variants in the YAML modal"
+            ));
+        }
+        ParentContainerRef::Imported { alias, .. } => {
+            return Err(format!(
+                "Container belongs to imported schema `{alias}` (open that schema directly to edit)"
+            ));
+        }
+        ParentContainerRef::UnassignedParentChunk {
+            parent_chunk_id, ..
+        } => {
+            return Err(format!(
+                "Assign a `Children` container type to parent chunk 0x{parent_chunk_id:04X} first"
+            ));
+        }
+        ParentContainerRef::MiniChunksType { .. } => {
+            return Err("Cannot add a 32-bit chunk to a mini-chunk container".to_owned());
+        }
+    };
+
+    let fields = match schema.types.get_mut(&type_name) {
+        Some(TypeDef::Chunks(c)) => &mut c.fields,
+        Some(TypeDef::ChunkStreamSeq(s)) => &mut s.fields,
+        _ => return Err(format!("Parent container type `{type_name}` not found")),
+    };
+    Ok((type_name, fields))
+}
+
 /// Assigns or updates a 32-bit chunk field definition in `parent_ref`.
 ///
-/// If `payload_kind` is `"children"` or `"mini_chunks"` or `"byte_block"` and the referenced
-/// named type does not yet exist in `schema.types`, it is automatically created so the schema
-/// stays valid and ready to edit.
+/// Newly created child types (`Children`, `MiniChunks`, `ByteBlock`) are inserted directly after the
+/// parent type in `schema.types` to preserve parents-before-children order.
 pub fn upsert_chunk_field(
     schema: &mut Schema,
     parent_ref: &ParentContainerRef,
@@ -427,108 +619,58 @@ pub fn upsert_chunk_field(
         return Err("Field name cannot be empty".to_owned());
     }
 
-    // Ensure any referenced child container / mini-chunk container / byte block type exists
-    match &payload {
-        ChunkPayloadSpec::Children(type_name) => {
-            schema
-                .types
-                .entry(type_name.clone())
-                .or_insert_with(|| {
-                    TypeDef::Chunks(ChunkContainerDef {
-                        description: None,
-                        mode: OrderMode::Map,
-                        ignore_unknown: true,
-                        fields: Vec::new(),
-                    })
-                });
+    let parent_type_name = {
+        let (tname, fields) = resolve_editable_chunk_fields(schema, parent_ref)?;
+        if let Some(existing) = fields.iter_mut().find(|f| {
+            matches!(
+                f.source,
+                ChunkFieldSource::Id { id, .. } if id == chunk_id
+            )
+        }) {
+            existing.name = clean_name.to_owned();
+            existing.cardinality = cardinality;
+            existing.source = ChunkFieldSource::Id {
+                id: chunk_id,
+                payload: payload.clone(),
+            };
+            existing.wire_format = wire_format;
+        } else {
+            fields.push(ChunkFieldDef {
+                name: clean_name.to_owned(),
+                description: None,
+                cardinality,
+                source: ChunkFieldSource::Id {
+                    id: chunk_id,
+                    payload: payload.clone(),
+                },
+                wire_format,
+            });
         }
-        ChunkPayloadSpec::MiniChunks(type_name) => {
-            schema
-                .types
-                .entry(type_name.clone())
-                .or_insert_with(|| {
-                    TypeDef::MiniChunks(MiniChunkContainerDef {
-                        description: None,
-                        mode: OrderMode::Map,
-                        ignore_unknown: true,
-                        fields: Vec::new(),
-                    })
-                });
-        }
-        ChunkPayloadSpec::Data(DataType::Named(type_name)) => {
-            schema
-                .types
-                .entry(type_name.clone())
-                .or_insert_with(|| {
-                    TypeDef::ByteBlock(ByteBlockDef {
-                        description: None,
-                        fields: Vec::new(),
-                        pad_after: None,
-                    })
-                });
-        }
-        ChunkPayloadSpec::Data(DataType::List(inner)) => {
-            if let DataType::Named(type_name) = &**inner {
-                schema
-                    .types
-                    .entry(type_name.clone())
-                    .or_insert_with(|| {
-                        TypeDef::ByteBlock(ByteBlockDef {
-                            description: None,
-                            fields: Vec::new(),
-                            pad_after: None,
-                        })
-                    });
-            }
-        }
-        _ => {}
-    }
-
-    let container = match parent_ref {
-        ParentContainerRef::Root => &mut schema.root,
-        ParentContainerRef::ChunksType { type_name } => match schema.types.get_mut(type_name) {
-            Some(TypeDef::Chunks(c) | TypeDef::ChunkStreamSeq(c)) => c,
-            _ => return Err(format!("Parent container type `{type_name}` not found")),
-        },
-        ParentContainerRef::UnassignedParentChunk {
-            parent_chunk_id, ..
-        } => {
-            return Err(format!(
-                "Assign a `Children` container type to parent chunk 0x{parent_chunk_id:04X} first"
-            ));
-        }
-        ParentContainerRef::MiniChunksType { .. } => {
-            return Err("Cannot add a 32-bit chunk to a mini-chunk container".to_owned());
-        }
+        tname
     };
 
-    if let Some(existing) = container.fields.iter_mut().find(|f| {
+    ensure_payload_target_type(schema, Some(&parent_type_name), &payload);
+    Ok(())
+}
+
+/// Removes the [`ChunkFieldDef`] matching `chunk_id` from `parent_ref`, returning the removed field
+/// name.
+#[allow(dead_code)]
+pub fn delete_chunk_field(
+    schema: &mut Schema,
+    parent_ref: &ParentContainerRef,
+    chunk_id: u32,
+) -> Result<String, String> {
+    let (_, fields) = resolve_editable_chunk_fields(schema, parent_ref)?;
+    let Some(idx) = fields.iter().position(|f| {
         matches!(
             f.source,
             ChunkFieldSource::Id { id, .. } if id == chunk_id
         )
-    }) {
-        existing.name = clean_name.to_owned();
-        existing.cardinality = cardinality;
-        existing.source = ChunkFieldSource::Id {
-            id: chunk_id,
-            payload,
-        };
-        existing.wire_format = wire_format;
-    } else {
-        container.fields.push(ChunkFieldDef {
-            name: clean_name.to_owned(),
-            description: None,
-            cardinality,
-            source: ChunkFieldSource::Id {
-                id: chunk_id,
-                payload,
-            },
-            wire_format,
-        });
-    }
-
-    Ok(())
+    }) else {
+        return Err(format!("No field found for chunk 0x{chunk_id:04X}"));
+    };
+    Ok(fields.remove(idx).name)
 }
 
 /// Assigns or updates an 8-bit mini-chunk field definition in `parent_ref`.
@@ -546,30 +688,24 @@ pub fn upsert_mini_chunk_field(
         return Err("Mini-chunk field name cannot be empty".to_owned());
     }
 
-    if let DataType::Named(type_name) = &ty {
-        schema
-            .types
-            .entry(type_name.clone())
-            .or_insert_with(|| {
-                TypeDef::ByteBlock(ByteBlockDef {
-                    description: None,
-                    fields: Vec::new(),
-                    pad_after: None,
-                })
-            });
-    }
-
-    let ParentContainerRef::MiniChunksType { type_name } = parent_ref else {
-        return Err("Assign a `MiniChunks` container type to the parent chunk first".to_owned());
+    let type_name = match parent_ref {
+        ParentContainerRef::MiniChunksType { type_name } => type_name.clone(),
+        ParentContainerRef::Imported { alias, .. } => {
+            return Err(format!(
+                "MiniChunks container belongs to imported schema `{alias}` (open that schema directly to edit)"
+            ));
+        }
+        _ => return Err("Assign a `MiniChunks` container type to the parent chunk first".to_owned()),
     };
-    let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get_mut(type_name) else {
+
+    let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get_mut(&type_name) else {
         return Err(format!("MiniChunks type `{type_name}` not found in schema"));
     };
 
     if let Some(existing) = mc_container.fields.iter_mut().find(|f| f.id == mc_id) {
         existing.name = clean_name.to_owned();
         existing.cardinality = cardinality;
-        existing.ty = ty;
+        existing.ty = ty.clone();
         existing.wire_format = wire_format;
     } else {
         mc_container.fields.push(MiniChunkFieldDef {
@@ -577,19 +713,67 @@ pub fn upsert_mini_chunk_field(
             name: clean_name.to_owned(),
             description: None,
             cardinality,
-            ty,
+            ty: ty.clone(),
             wire_format,
         });
+    }
+
+    if let DataType::Named(bb_name) = &ty
+        && !bb_name.contains("::")
+    {
+        schema.insert_type_after(
+            Some(&type_name),
+            bb_name.clone(),
+            TypeDef::ByteBlock(ByteBlockDef {
+                description: None,
+                fields: Vec::new(),
+                pad_after: None,
+            }),
+        );
     }
 
     Ok(())
 }
 
-/// Ensures that the selected leaf chunk or mini-chunk is backed by a named [`TypeDef::ByteBlock`]
-/// in `schema.types`, creating one if necessary, and appends a new field (`field_name`, `ty`, `wire_format`)
-/// to that `ByteBlock`.
+/// Removes the [`MiniChunkFieldDef`] matching `mc_id` from `parent_ref`, returning the removed
+/// field name.
+#[allow(dead_code)]
+pub fn delete_mini_chunk_field(
+    schema: &mut Schema,
+    parent_ref: &ParentContainerRef,
+    mc_id: u8,
+) -> Result<String, String> {
+    let ParentContainerRef::MiniChunksType { type_name } = parent_ref else {
+        return Err("Mini-chunk field does not belong to an editable local MiniChunks type".to_owned());
+    };
+    let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get_mut(type_name) else {
+        return Err(format!("MiniChunks type `{type_name}` not found in schema"));
+    };
+    let Some(idx) = mc_container.fields.iter().position(|f| f.id == mc_id) else {
+        return Err(format!("No field found for mini-chunk 0x{mc_id:02X}"));
+    };
+    Ok(mc_container.fields.remove(idx).name)
+}
+
+/// Updates trailing `pad_after` on a named `TypeDef::ByteBlock` in `schema.types`.
+#[allow(dead_code)]
+pub fn set_byte_block_pad_after(
+    schema: &mut Schema,
+    bb_name: &str,
+    pad_after: Option<usize>,
+) -> Result<(), String> {
+    let Some(TypeDef::ByteBlock(bb)) = schema.types.get_mut(bb_name) else {
+        return Err(format!("ByteBlock `{bb_name}` not found in schema"));
+    };
+    bb.pad_after = pad_after.filter(|&p| p > 0);
+    Ok(())
+}
+
+/// Ensures that the selected leaf chunk or mini-chunk is backed by a local [`TypeDef::ByteBlock`]
+/// in `schema.types`, creating one if necessary, and appends a new field to that `ByteBlock`.
 pub fn append_field_to_node_byte_block(
     schema: &mut Schema,
+    resolved: &ResolvedSchema,
     node: &SelectedNodeDetails,
     field_name: &str,
     ty: DataType,
@@ -601,69 +785,68 @@ pub fn append_field_to_node_byte_block(
         return Err("Field name cannot be empty".to_owned());
     }
 
-    let block_type_name = if let Some(existing_bb) = &node.active_byte_block_type {
-        existing_bb.clone()
-    } else {
-        // Determine a sensible default struct name and link this node to it
-        let base_field_name = node
-            .schema_field_name
-            .clone()
-            .unwrap_or_else(|| {
+    let block_type_name = match &node.active_byte_block {
+        Some((SchemaId::ROOT, existing_bb)) => existing_bb.clone(),
+        Some((mod_id, _)) => {
+            let mod_name = &resolved.module(*mod_id).schema.name;
+            return Err(format!(
+                "ByteBlock belongs to imported schema `{mod_name}` (open that schema directly to edit)"
+            ));
+        }
+        None => {
+            let base_field_name = node.schema_field_name.clone().unwrap_or_else(|| {
                 if node.is_mini_chunk {
                     format!("mc_{:02x}", node.id)
                 } else {
                     format!("chunk_{:04x}", node.id)
                 }
             });
-        let new_bb_name = format!("{}Block", to_pascal_case(&base_field_name));
+            let new_bb_name = format!("{}Block", to_pascal_case(&base_field_name));
 
-        if node.is_mini_chunk {
-            let existing_card = find_existing_mini_chunk_field(
-                schema,
-                &node.parent_container,
-                node.id as u8,
-            )
-            .map(|f| f.cardinality.clone())
-            .unwrap_or(Cardinality::Required);
-            upsert_mini_chunk_field(
-                schema,
-                &node.parent_container,
-                node.id as u8,
-                &base_field_name,
-                existing_card,
-                DataType::Named(new_bb_name.clone()),
-                None,
-            )?;
-        } else {
-            let existing_card =
-                find_existing_chunk_field(schema, &node.parent_container, node.id)
-                    .map(|f| f.cardinality.clone())
-                    .unwrap_or(Cardinality::Required);
-            upsert_chunk_field(
-                schema,
-                &node.parent_container,
-                node.id,
-                &base_field_name,
-                existing_card,
-                ChunkPayloadSpec::Data(DataType::Named(new_bb_name.clone())),
-                None,
-            )?;
+            if node.is_mini_chunk {
+                let existing_card =
+                    find_existing_mini_chunk_field(resolved, &node.parent_container, node.id as u8)
+                        .map(|f| f.cardinality.clone())
+                        .unwrap_or(Cardinality::Required);
+                upsert_mini_chunk_field(
+                    schema,
+                    &node.parent_container,
+                    node.id as u8,
+                    &base_field_name,
+                    existing_card,
+                    DataType::Named(new_bb_name.clone()),
+                    None,
+                )?;
+            } else {
+                let existing_card =
+                    find_existing_chunk_field(resolved, &node.parent_container, node.id)
+                        .map(|f| f.cardinality.clone())
+                        .unwrap_or(Cardinality::Required);
+                upsert_chunk_field(
+                    schema,
+                    &node.parent_container,
+                    node.id,
+                    &base_field_name,
+                    existing_card,
+                    ChunkPayloadSpec::Data(DataType::Named(new_bb_name.clone())),
+                    None,
+                )?;
+            }
+            new_bb_name
         }
-        new_bb_name
     };
 
-    let entry = schema
-        .types
-        .entry(block_type_name.clone())
-        .or_insert_with(|| {
-            TypeDef::ByteBlock(ByteBlockDef {
-                description: None,
-                fields: Vec::new(),
-                pad_after: None,
-            })
-        });
+    schema.insert_type_after(
+        None,
+        block_type_name.clone(),
+        TypeDef::ByteBlock(ByteBlockDef {
+            description: None,
+            fields: Vec::new(),
+            pad_after: None,
+        }),
+    );
 
-    let TypeDef::ByteBlock(bb) = entry else {
+    let Some(TypeDef::ByteBlock(bb)) = schema.types.get_mut(&block_type_name) else {
         return Err(format!("Type `{block_type_name}` is not a ByteBlock"));
     };
 
@@ -682,9 +865,21 @@ pub fn append_field_to_node_byte_block(
 mod tests {
     use super::*;
     use petro_chunked_schema::dynamic::{LoadOptions, load_dynamic_file};
+    use petro_chunked_schema::resolve::SchemaLoader;
+
+    fn make_chunk(id: u32, is_container: bool, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + payload.len());
+        out.extend_from_slice(&id.to_le_bytes());
+        let mut size = payload.len() as u32;
+        if is_container {
+            size |= 0x8000_0000;
+        }
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
 
     fn make_sample_chunk_buffer() -> Vec<u8> {
-        // Container chunk 0x0200 holding leaf chunk 0x0201 (8 bytes of data: u32=3, f32=1.5)
         let mut leaf_payload = Vec::new();
         leaf_payload.extend_from_slice(&3u32.to_le_bytes());
         leaf_payload.extend_from_slice(&1.5f32.to_le_bytes());
@@ -704,20 +899,21 @@ mod tests {
     }
 
     #[test]
-    fn test_interactive_schema_construction_workflow() {
+    fn test_interactive_schema_construction_deletion_and_ordering() {
         let bytes = make_sample_chunk_buffer();
         let mut schema = Schema::new_empty("TestSkeletonFormat");
         let opts = LoadOptions::default();
 
         // 1. Load with blank schema
-        let df0 = load_dynamic_file(&bytes, Some(&schema), &opts).unwrap();
+        let res0 = SchemaLoader::resolve(schema.clone(), None).unwrap();
+        let df0 = load_dynamic_file(&bytes, Some(&res0), &opts).unwrap();
         let rows = build_flat_tree(&df0, &BTreeSet::new(), 100);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].tree_path, "0");
         assert_eq!(rows[1].tree_path, "0/0");
 
         // 2. Select root chunk "0" (0x0200) and assign it a Children container `SkeletonContainer`
-        let root_node = resolve_selected_node(&df0, &schema, "0").unwrap();
+        let root_node = resolve_selected_node(&df0, &res0, "0").unwrap();
         assert_eq!(root_node.id, 0x0200);
         assert_eq!(root_node.parent_container, ParentContainerRef::Root);
         upsert_chunk_field(
@@ -732,8 +928,9 @@ mod tests {
         .unwrap();
 
         // 3. Re-evaluate and select child chunk "0/0" (0x0201)
-        let df1 = load_dynamic_file(&bytes, Some(&schema), &opts).unwrap();
-        let child_node = resolve_selected_node(&df1, &schema, "0/0").unwrap();
+        let res1 = SchemaLoader::resolve(schema.clone(), None).unwrap();
+        let df1 = load_dynamic_file(&bytes, Some(&res1), &opts).unwrap();
+        let child_node = resolve_selected_node(&df1, &res1, "0/0").unwrap();
         assert_eq!(child_node.id, 0x0201);
         assert_eq!(
             child_node.parent_container,
@@ -742,9 +939,10 @@ mod tests {
             }
         );
 
-        // 4. Use "+ Add to ByteBlock" twice on child chunk 0x0201 (just like clicking in the Byte Inspector!)
+        // 4. Add two ByteBlock fields + verify parents-before-children insertion order
         let bb_name = append_field_to_node_byte_block(
             &mut schema,
+            &res1,
             &child_node,
             "bone_count",
             DataType::Usize,
@@ -754,14 +952,14 @@ mod tests {
         .unwrap();
         assert_eq!(bb_name, "Chunk0201Block");
 
-        let df2 = load_dynamic_file(&bytes, Some(&schema), &opts).unwrap();
-        let child_node2 = resolve_selected_node(&df2, &schema, "0/0").unwrap();
-        assert_eq!(
-            child_node2.active_byte_block_type.as_deref(),
-            Some("Chunk0201Block")
-        );
+        let res2 = SchemaLoader::resolve(schema.clone(), None).unwrap();
+        let df2 = load_dynamic_file(&bytes, Some(&res2), &opts).unwrap();
+        let child_node2 = resolve_selected_node(&df2, &res2, "0/0").unwrap();
+        assert_eq!(child_node2.editable_byte_block(), Some("Chunk0201Block"));
+
         append_field_to_node_byte_block(
             &mut schema,
+            &res2,
             &child_node2,
             "scale",
             DataType::F32,
@@ -770,16 +968,45 @@ mod tests {
         )
         .unwrap();
 
-        // 5. Re-evaluate: all 8 bytes of 0x0201 should now be covered by 2 spans with 0 diagnostics!
-        let df3 = load_dynamic_file(&bytes, Some(&schema), &opts).unwrap();
+        // Check parents-before-children ordering in schema.types
+        let type_order: Vec<&str> = schema.types.keys().map(String::as_str).collect();
+        assert_eq!(
+            type_order,
+            vec!["TestSkeletonFormat", "SkeletonContainer", "Chunk0201Block"]
+        );
+
+        // 5. Re-evaluate: all 8 bytes covered cleanly
+        let res3 = SchemaLoader::resolve(schema.clone(), None).unwrap();
+        let df3 = load_dynamic_file(&bytes, Some(&res3), &opts).unwrap();
         assert!(df3.diagnostics.is_empty(), "diags: {:?}", df3.diagnostics);
-        let child_node3 = resolve_selected_node(&df3, &schema, "0/0").unwrap();
+        let child_node3 = resolve_selected_node(&df3, &res3, "0/0").unwrap();
         assert_eq!(child_node3.spans.len(), 2);
-        assert_eq!(child_node3.spans[0].start, 0);
-        assert_eq!(child_node3.spans[0].end, 4);
-        assert_eq!(child_node3.spans[0].field_path, "chunk_0201.bone_count");
-        assert_eq!(child_node3.spans[1].start, 4);
-        assert_eq!(child_node3.spans[1].end, 8);
-        assert_eq!(child_node3.spans[1].field_path, "chunk_0201.scale");
+
+        // 6. Test pad_after & deletion helpers
+        set_byte_block_pad_after(&mut schema, "Chunk0201Block", Some(4)).unwrap();
+        assert!(matches!(
+            schema.types.get("Chunk0201Block"),
+            Some(TypeDef::ByteBlock(bb)) if bb.pad_after == Some(4)
+        ));
+        let removed = delete_chunk_field(&mut schema, &child_node3.parent_container, 0x0201).unwrap();
+        assert_eq!(removed, "chunk_0201");
+    }
+
+    #[test]
+    fn test_imported_nodes_are_marked_read_only() {
+        let resolved = SchemaLoader::load(&SchemaRef::Builtin("Alo".to_owned())).unwrap();
+        let mut skel_hdr = Vec::from(0u32.to_le_bytes());
+        skel_hdr.extend_from_slice(&[0u8; 124]);
+        let skel = make_chunk(0x0201, false, &skel_hdr);
+        let model_bytes = make_chunk(0x0200, true, &skel);
+
+        let df = load_dynamic_file(&model_bytes, Some(&resolved), &LoadOptions::default()).unwrap();
+        let node = resolve_selected_node(&df, &resolved, "0/0").unwrap();
+        assert!(matches!(
+            node.parent_container,
+            ParentContainerRef::Imported { .. }
+        ));
+        assert_eq!(node.editable_byte_block(), None);
+        assert!(node.active_byte_block.is_some());
     }
 }
