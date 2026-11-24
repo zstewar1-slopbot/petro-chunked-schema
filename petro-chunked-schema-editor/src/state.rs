@@ -109,10 +109,16 @@ impl Default for PersistedState {
 }
 
 impl PersistedState {
-    /// Returns the path to `state.json` inside the OS user configuration directory (via [`dirs::config_dir`]).
+    /// Returns the canonical OS application config path for `state.json` via
+    /// [`directories::ProjectDirs`].
     pub fn config_file_path() -> PathBuf {
-        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        base.join("petro-chunked-schema-editor").join("state.json")
+        if let Some(proj) =
+            directories::ProjectDirs::from("", "petro-chunked-schema", "petro-chunked-schema-editor")
+        {
+            proj.config_dir().join("state.json")
+        } else {
+            PathBuf::from("petro-chunked-schema-editor-state.json")
+        }
     }
 
     /// Loads persisted state from disk, falling back to [`Default::default`] if absent or corrupt.

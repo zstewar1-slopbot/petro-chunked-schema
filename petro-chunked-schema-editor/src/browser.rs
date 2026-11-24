@@ -593,8 +593,8 @@ pub fn default_quick_places(game_data_dirs: &[PathBuf]) -> Vec<QuickPlace> {
         push_dir("Workspace".to_owned(), sub, cwd);
     }
 
-    if let Some(home_path) = dirs::home_dir() {
-        push_dir("Home".to_owned(), None, home_path);
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        push_dir("Home".to_owned(), None, user_dirs.home_dir().to_path_buf());
     }
 
     push_dir("Filesystem /".to_owned(), None, PathBuf::from("/"));
