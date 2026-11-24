@@ -2,19 +2,21 @@ name: AloParticle
 description: Petroglyph Alamo Particle System (.alo) format
 file_extensions:
   - alo
-root:
-  description: Single top-level particle system chunk (0x00000900)
-  mode: sequence
-  ignore_unknown: false
-  fields:
-    - name: system
-      description: Particle system definition
-      cardinality: required
-      source_kind: id
-      id: 0x00000900
-      payload_kind: children
-      payload_type: ParticleSystem
+root: AloParticle
 types:
+  AloParticle:
+    kind: chunks
+    description: Single top-level particle system chunk (0x00000900)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: system
+        description: Particle system definition
+        cardinality: required
+        source_kind: id
+        id: 0x00000900
+        payload_kind: children
+        payload_type: ParticleSystem
   ParticleSystem:
     kind: chunks
     description: Particle system container (0x00000900)
@@ -58,6 +60,54 @@ types:
         id: 0x00000700
         payload_kind: children
         payload_type: ParticleEmitter
+  ParticleEmitter:
+    kind: chunks
+    description: Single particle emitter container (0x00000700)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: properties
+        cardinality: required
+        source_kind: id
+        id: 0x00000002
+        payload_kind: mini_chunks
+        payload_type: EmitterProperties
+      - name: color_texture
+        cardinality: required
+        source_kind: id
+        id: 0x00000003
+        payload_kind: data
+        payload_type: c_string
+      - name: name
+        cardinality: required
+        source_kind: id
+        id: 0x00000016
+        payload_kind: data
+        payload_type: c_string
+      - name: groups
+        cardinality: required
+        source_kind: id
+        id: 0x00000029
+        payload_kind: children
+        payload_type: EmitterGroups
+      - name: tracks
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: children
+        payload_type: EmitterTracks
+      - name: connections
+        cardinality: optional
+        source_kind: id
+        id: 0x00000036
+        payload_kind: mini_chunks
+        payload_type: EmitterConnections
+      - name: secondary_texture
+        cardinality: optional
+        source_kind: id
+        id: 0x00000045
+        payload_kind: data
+        payload_type: c_string
   EmitterProperties:
     kind: mini_chunks
     description: Particle emitter configuration properties (chunk 0x00000002)
@@ -274,6 +324,42 @@ types:
         name: unknown_73
         cardinality: optional
         ty: f32
+  EmitterGroups:
+    kind: chunks
+    description: Initial velocity, lifetime, and position groups (0x00000029)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: velocity
+        cardinality: required
+        source_kind: id
+        id: 0x00001100
+        payload_kind: children
+        payload_type: EmitterGroup
+      - name: lifetime
+        cardinality: required
+        source_kind: id
+        id: 0x00001100
+        payload_kind: children
+        payload_type: EmitterGroup
+      - name: position
+        cardinality: required
+        source_kind: id
+        id: 0x00001100
+        payload_kind: children
+        payload_type: EmitterGroup
+  EmitterGroup:
+    kind: chunks
+    description: Single property group wrapper (0x00001100)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00001101
+        payload_kind: data
+        payload_type: EmitterGroupData
   EmitterGroupData:
     kind: byte_block
     description: 64-byte volume specification for velocity, lifetime, or position (0x00001101)
@@ -300,141 +386,6 @@ types:
         ty: f32
       - name: exact_value
         ty: vec3
-  EmitterGroup:
-    kind: chunks
-    description: Single property group wrapper (0x00001100)
-    mode: sequence
-    ignore_unknown: false
-    fields:
-      - name: data
-        cardinality: required
-        source_kind: id
-        id: 0x00001101
-        payload_kind: data
-        payload_type:
-          named: EmitterGroupData
-  EmitterGroups:
-    kind: chunks
-    description: Initial velocity, lifetime, and position groups (0x00000029)
-    mode: sequence
-    ignore_unknown: false
-    fields:
-      - name: velocity
-        cardinality: required
-        source_kind: id
-        id: 0x00001100
-        payload_kind: children
-        payload_type: EmitterGroup
-      - name: lifetime
-        cardinality: required
-        source_kind: id
-        id: 0x00001100
-        payload_kind: children
-        payload_type: EmitterGroup
-      - name: position
-        cardinality: required
-        source_kind: id
-        id: 0x00001100
-        payload_kind: children
-        payload_type: EmitterGroup
-  ByteTrackProps:
-    kind: mini_chunks
-    description: 8-bit keyframe bounds and interpolation for RGBA tracks
-    mode: sequence
-    ignore_unknown: false
-    fields:
-      - id: 2
-        name: first_key
-        cardinality: required
-        ty: u8
-      - id: 3
-        name: last_key
-        cardinality: required
-        ty: u8
-      - id: 4
-        name: interpolation
-        cardinality: required
-        ty: u32
-  ByteTrackData:
-    kind: mini_chunks
-    description: Intermediate (u32 value, f32 time) keyframes for RGBA tracks
-    mode: map
-    ignore_unknown: false
-    fields:
-      - id: 5
-        name: keys
-        cardinality: repeated
-        ty:
-          tuple:
-            - u32
-            - f32
-  ByteTrack:
-    kind: chunk_stream_seq
-    description: Pair of (0x00000000 props, 0x00000001 keys) chunks for an RGBA color channel track
-    mode: sequence
-    ignore_unknown: false
-    fields:
-      - name: props
-        cardinality: required
-        source_kind: id
-        id: 0x00000000
-        payload_kind: mini_chunks
-        payload_type: ByteTrackProps
-      - name: data
-        cardinality: required
-        source_kind: id
-        id: 0x00000001
-        payload_kind: mini_chunks
-        payload_type: ByteTrackData
-  FloatTrackProps:
-    kind: mini_chunks
-    description: 32-bit float keyframe bounds and interpolation for size/texture/rotation tracks
-    mode: sequence
-    ignore_unknown: false
-    fields:
-      - id: 2
-        name: first_key
-        cardinality: required
-        ty: f32
-      - id: 3
-        name: last_key
-        cardinality: required
-        ty: f32
-      - id: 4
-        name: interpolation
-        cardinality: required
-        ty: u32
-  FloatTrackData:
-    kind: mini_chunks
-    description: Intermediate (f32 value, f32 time) keyframes for size/texture/rotation tracks
-    mode: map
-    ignore_unknown: false
-    fields:
-      - id: 5
-        name: keys
-        cardinality: repeated
-        ty:
-          tuple:
-            - f32
-            - f32
-  FloatTrack:
-    kind: chunk_stream_seq
-    description: Pair of (0x00000000 props, 0x00000001 keys) chunks for a float track
-    mode: sequence
-    ignore_unknown: false
-    fields:
-      - name: props
-        cardinality: required
-        source_kind: id
-        id: 0x00000000
-        payload_kind: mini_chunks
-        payload_type: FloatTrackProps
-      - name: data
-        cardinality: required
-        source_kind: id
-        id: 0x00000001
-        payload_kind: mini_chunks
-        payload_type: FloatTrackData
   EmitterTracks:
     kind: chunks
     description: Seven positional keyframe tracks (R, G, B, A, size, texture_index, rotation_speed) in chunk 0x00000001
@@ -469,6 +420,94 @@ types:
         cardinality: required
         source_kind: stream
         item_type: FloatTrack
+  ByteTrack:
+    kind: chunk_stream_seq
+    description: Pair of (0x00000000 props, 0x00000001 keys) chunks for an RGBA color channel track
+    fields:
+      - name: props
+        cardinality: required
+        source_kind: id
+        id: 0x00000000
+        payload_kind: mini_chunks
+        payload_type: ByteTrackProps
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: mini_chunks
+        payload_type: ByteTrackData
+  ByteTrackProps:
+    kind: mini_chunks
+    description: 8-bit keyframe bounds and interpolation for RGBA tracks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 2
+        name: first_key
+        cardinality: required
+        ty: u8
+      - id: 3
+        name: last_key
+        cardinality: required
+        ty: u8
+      - id: 4
+        name: interpolation
+        cardinality: required
+        ty: u32
+  ByteTrackData:
+    kind: mini_chunks
+    description: Intermediate (u32 value, f32 time) keyframes for RGBA tracks
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 5
+        name: keys
+        cardinality: repeated
+        ty: "(u32, f32)"
+  FloatTrack:
+    kind: chunk_stream_seq
+    description: Pair of (0x00000000 props, 0x00000001 keys) chunks for a float track
+    fields:
+      - name: props
+        cardinality: required
+        source_kind: id
+        id: 0x00000000
+        payload_kind: mini_chunks
+        payload_type: FloatTrackProps
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: mini_chunks
+        payload_type: FloatTrackData
+  FloatTrackProps:
+    kind: mini_chunks
+    description: 32-bit float keyframe bounds and interpolation for size/texture/rotation tracks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 2
+        name: first_key
+        cardinality: required
+        ty: f32
+      - id: 3
+        name: last_key
+        cardinality: required
+        ty: f32
+      - id: 4
+        name: interpolation
+        cardinality: required
+        ty: u32
+  FloatTrackData:
+    kind: mini_chunks
+    description: Intermediate (f32 value, f32 time) keyframes for size/texture/rotation tracks
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 5
+        name: keys
+        cardinality: repeated
+        ty: "(f32, f32)"
   EmitterConnections:
     kind: mini_chunks
     description: Death and birth sub-emitter indices (chunk 0x00000036)
@@ -483,51 +522,3 @@ types:
         name: birth_emitter
         cardinality: required
         ty: u32
-  ParticleEmitter:
-    kind: chunks
-    description: Single particle emitter container (0x00000700)
-    mode: map
-    ignore_unknown: false
-    fields:
-      - name: properties
-        cardinality: required
-        source_kind: id
-        id: 0x00000002
-        payload_kind: mini_chunks
-        payload_type: EmitterProperties
-      - name: color_texture
-        cardinality: required
-        source_kind: id
-        id: 0x00000003
-        payload_kind: data
-        payload_type: c_string
-      - name: name
-        cardinality: required
-        source_kind: id
-        id: 0x00000016
-        payload_kind: data
-        payload_type: c_string
-      - name: groups
-        cardinality: required
-        source_kind: id
-        id: 0x00000029
-        payload_kind: children
-        payload_type: EmitterGroups
-      - name: tracks
-        cardinality: required
-        source_kind: id
-        id: 0x00000001
-        payload_kind: children
-        payload_type: EmitterTracks
-      - name: connections
-        cardinality: optional
-        source_kind: id
-        id: 0x00000036
-        payload_kind: mini_chunks
-        payload_type: EmitterConnections
-      - name: secondary_texture
-        cardinality: optional
-        source_kind: id
-        id: 0x00000045
-        payload_kind: data
-        payload_type: c_string

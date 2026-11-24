@@ -2,19 +2,57 @@ name: AlaAnimation
 description: Petroglyph Alamo Animation (.ala) format (supporting both Format #1 and Format #2)
 file_extensions:
   - ala
-root:
-  description: Single top-level animation chunk (0x00001000)
-  mode: sequence
-  ignore_unknown: false
-  fields:
-    - name: animation
-      description: Root animation container
-      cardinality: required
-      source_kind: id
-      id: 0x00001000
-      payload_kind: children
-      payload_type: AlaFile
+root: AlaAnimation
 types:
+  AlaAnimation:
+    kind: chunks
+    description: Single top-level animation chunk (0x00001000)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: animation
+        description: Root animation container
+        cardinality: required
+        source_kind: id
+        id: 0x00001000
+        payload_kind: children
+        payload_type: AlaFile
+  AlaFile:
+    kind: chunks
+    description: Animation contents inside chunk 0x00001000
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: header
+        cardinality: required
+        source_kind: id
+        id: 0x00001001
+        payload_kind: mini_chunks
+        payload_type: AnimationHeader
+      - name: bones
+        cardinality: repeated
+        source_kind: id
+        id: 0x00001002
+        payload_kind: children
+        payload_type: BoneAnimation
+      - name: rotations
+        cardinality: optional
+        source_kind: id
+        id: 0x00001009
+        payload_kind: data
+        payload_type: "Vec<[i16; 4]>"
+      - name: translations
+        cardinality: optional
+        source_kind: id
+        id: 0x0000100a
+        payload_kind: data
+        payload_type: "Vec<[i16; 3]>"
+      - name: scales
+        cardinality: optional
+        source_kind: id
+        id: 0x0000100b
+        payload_kind: data
+        payload_type: "Vec<[i16; 3]>"
   AnimationHeader:
     kind: mini_chunks
     description: Animation file header (chunk 0x00001001)
@@ -50,6 +88,48 @@ types:
         cardinality: optional
         ty: usize
         wire_format: U32Usize
+  BoneAnimation:
+    kind: chunks
+    description: Per-bone animation track data (chunk 0x00001002)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: header
+        cardinality: required
+        source_kind: id
+        id: 0x00001003
+        payload_kind: mini_chunks
+        payload_type: BoneAnimationHeader
+      - name: translations
+        cardinality: optional
+        source_kind: id
+        id: 0x00001004
+        payload_kind: data
+        payload_type: "Vec<[u16; 3]>"
+      - name: scales
+        cardinality: optional
+        source_kind: id
+        id: 0x00001005
+        payload_kind: data
+        payload_type: "Vec<[u16; 3]>"
+      - name: rotations
+        cardinality: optional
+        source_kind: id
+        id: 0x00001006
+        payload_kind: data
+        payload_type: "Vec<[i16; 4]>"
+      - name: visibility
+        cardinality: optional
+        source_kind: id
+        id: 0x00001007
+        payload_kind: data
+        payload_type: raw_bytes
+      - name: step
+        cardinality: optional
+        source_kind: id
+        id: 0x00001008
+        payload_kind: data
+        payload_type: raw_bytes
   BoneAnimationHeader:
     kind: mini_chunks
     description: Per-bone animation header (chunk 0x00001003)
@@ -100,109 +180,4 @@ types:
       - id: 17
         name: default_rotation
         cardinality: optional
-        ty:
-          array:
-            elem: i16
-            len: 4
-  BoneAnimation:
-    kind: chunks
-    description: Per-bone animation track data (chunk 0x00001002)
-    mode: map
-    ignore_unknown: false
-    fields:
-      - name: header
-        cardinality: required
-        source_kind: id
-        id: 0x00001003
-        payload_kind: mini_chunks
-        payload_type: BoneAnimationHeader
-      - name: translations
-        cardinality: optional
-        source_kind: id
-        id: 0x00001004
-        payload_kind: data
-        payload_type:
-          list:
-            array:
-              elem: u16
-              len: 3
-      - name: scales
-        cardinality: optional
-        source_kind: id
-        id: 0x00001005
-        payload_kind: data
-        payload_type:
-          list:
-            array:
-              elem: u16
-              len: 3
-      - name: rotations
-        cardinality: optional
-        source_kind: id
-        id: 0x00001006
-        payload_kind: data
-        payload_type:
-          list:
-            array:
-              elem: i16
-              len: 4
-      - name: visibility
-        cardinality: optional
-        source_kind: id
-        id: 0x00001007
-        payload_kind: data
-        payload_type: raw_bytes
-      - name: step
-        cardinality: optional
-        source_kind: id
-        id: 0x00001008
-        payload_kind: data
-        payload_type: raw_bytes
-  AlaFile:
-    kind: chunks
-    description: Animation contents inside chunk 0x00001000
-    mode: map
-    ignore_unknown: false
-    fields:
-      - name: header
-        cardinality: required
-        source_kind: id
-        id: 0x00001001
-        payload_kind: mini_chunks
-        payload_type: AnimationHeader
-      - name: bones
-        cardinality: repeated
-        source_kind: id
-        id: 0x00001002
-        payload_kind: children
-        payload_type: BoneAnimation
-      - name: rotations
-        cardinality: optional
-        source_kind: id
-        id: 0x00001009
-        payload_kind: data
-        payload_type:
-          list:
-            array:
-              elem: i16
-              len: 4
-      - name: translations
-        cardinality: optional
-        source_kind: id
-        id: 0x0000100a
-        payload_kind: data
-        payload_type:
-          list:
-            array:
-              elem: i16
-              len: 3
-      - name: scales
-        cardinality: optional
-        source_kind: id
-        id: 0x0000100b
-        payload_kind: data
-        payload_type:
-          list:
-            array:
-              elem: i16
-              len: 3
+        ty: "[i16; 4]"

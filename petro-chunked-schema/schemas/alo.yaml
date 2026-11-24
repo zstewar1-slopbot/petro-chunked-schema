@@ -1,0 +1,21 @@
+name: Alo
+description: Combined Petroglyph Alamo (.alo) format dispatching between 3D models and particle systems
+file_extensions:
+  - alo
+imports:
+  model: builtin:AloModel
+  particle: builtin:AloParticle
+root: AloFile
+types:
+  AloFile:
+    kind: chunk_enum
+    description: Top-level .alo file variant (3D model or particle system)
+    variants:
+      - name: Model
+        description: 3D model starting with skeleton chunk 0x00000200
+        source_kind: stream
+        item_type: model::AloModel
+      - name: Particle
+        description: Particle system starting with chunk 0x00000900
+        source_kind: stream
+        item_type: particle::AloParticle
