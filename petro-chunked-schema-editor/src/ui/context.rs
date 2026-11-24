@@ -530,7 +530,6 @@ impl EditorState {
 
     /// Navigates the right-rail schema stack to a child field or variant of `parent_level_idx`,
     /// allowing inspection and editing even when that definition has `0` occurrences in the file.
-    #[allow(dead_code)]
     pub fn select_schema_child(&mut self, parent_level_idx: usize, child: SchemaChildItem) {
         let mut stack = self.schema_stack.read().clone();
         stack.truncate(parent_level_idx + 1);
@@ -545,7 +544,6 @@ impl EditorState {
     }
 
     /// Truncates the right-rail schema stack so `level_idx` becomes the active bottom card.
-    #[allow(dead_code)]
     pub fn focus_schema_level(&mut self, level_idx: usize) {
         let mut stack = self.schema_stack.read().clone();
         if level_idx < stack.len() {
@@ -557,7 +555,6 @@ impl EditorState {
     }
 
     /// Expands or collapses an ancestor card at `level_idx` in the right-rail schema stack.
-    #[allow(dead_code)]
     pub fn toggle_stack_level_expanded(&mut self, level_idx: usize) {
         let mut expanded = self.expanded_stack_levels.write();
         if !expanded.remove(&level_idx) {
@@ -566,7 +563,6 @@ impl EditorState {
     }
 
     /// Updates [`Self::hovered_schema_target`] only when the value actually changes.
-    #[allow(dead_code)]
     pub fn set_hovered_schema_target(&mut self, target: Option<HoveredSchemaTarget>) {
         if *self.hovered_schema_target.read() != target {
             self.hovered_schema_target.set(target);

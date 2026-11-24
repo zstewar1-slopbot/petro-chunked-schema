@@ -1,9 +1,11 @@
-//! Left pane: expandable chunk and mini-chunk tree view plus per-file schema diagnostics.
+//! Left pane: expandable chunk and mini-chunk tree view with right-rail hover match highlighting
+//! plus per-file schema diagnostics.
 
 use freya::prelude::*;
 use petro_chunked_schema::dynamic::DynamicFile;
 
 use crate::editor_ops::{FlatTreeRow, build_flat_tree};
+use crate::schema_nav::matches_hover_target;
 use crate::ui::context::EditorState;
 use crate::ui::theme;
 use crate::ui::widgets::{ActionButton, ButtonStyle};
@@ -15,11 +17,20 @@ pub fn ChunkTreePane() -> Element {
     let df_opt = state.dynamic_file.read().clone();
     let collapsed = state.collapsed_paths.read().clone();
     let selected_path = state.selected_tree_path.read().clone();
+    let resolved = state.resolved_schema.read().clone();
+    let hovered = state.hovered_schema_target.read().clone();
 
     let flat_tree = df_opt
         .as_ref()
         .map(|df| build_flat_tree(df, &collapsed, 600))
         .unwrap_or_default();
+
+    let matched_count = hovered.as_ref().map(|target| {
+        flat_tree
+            .iter()
+            .filter(|row| matches_hover_target(&resolved, row, target))
+            .count()
+    });
 
     rsx! {
         rect {
@@ -48,6 +59,15 @@ pub fn ChunkTreePane() -> Element {
                     compact: Some(true),
                     onpress: move |_| state.expand_all(),
                 }
+                if let Some(count) = matched_count {
+                    label {
+                        font_size: "11",
+                        font_weight: "bold",
+                        color: if count > 0 { theme::ACCENT_BLUE } else { theme::TEXT_DIM },
+                        max_lines: "1",
+                        "{count} highlighted"
+                    }
+                }
             }
 
             ScrollView {
@@ -62,17 +82,21 @@ pub fn ChunkTreePane() -> Element {
                         label {
                             font_size: "12",
                             color: theme::TEXT_MUTED,
-                            "No file loaded. Click 'Files / .meg...' above to open an .alo or .ala file."
+                            "No file loaded. Click 'Open File / .meg...' above to open an .alo or .ala file."
                         }
                     }
                     for row in flat_tree {
                         {
                             let is_selected = row.tree_path == selected_path;
+                            let is_hover_match = hovered
+                                .as_ref()
+                                .is_some_and(|target| matches_hover_target(&resolved, &row, target));
                             rsx! {
                                 ChunkTreeRow {
                                     key: "{row.tree_path}",
                                     row,
                                     is_selected,
+                                    is_hover_match,
                                 }
                             }
                         }
@@ -88,17 +112,24 @@ pub fn ChunkTreePane() -> Element {
 }
 
 #[component]
-fn ChunkTreeRow(row: FlatTreeRow, is_selected: bool) -> Element {
+fn ChunkTreeRow(row: FlatTreeRow, is_selected: bool, is_hover_match: bool) -> Element {
     let mut state = use_context::<EditorState>();
     let row_path = row.tree_path.clone();
     let row_path_toggle = row.tree_path.clone();
 
     let bg = if is_selected {
         theme::BG_ROW_SELECTED
+    } else if is_hover_match {
+        theme::BG_ROW_HOVER_MATCH
     } else if row.has_error {
         theme::BG_ROW_ERROR
     } else {
         theme::BG_ROW
+    };
+    let border = if is_hover_match {
+        theme::BORDER_ROW_HOVER_MATCH
+    } else {
+        "1 solid transparent"
     };
     let indent_px = row.depth * 14;
     let id_color = if row.is_mini_chunk {
@@ -132,9 +163,10 @@ fn ChunkTreeRow(row: FlatTreeRow, is_selected: bool) -> Element {
         rect {
             width: "fill",
             overflow: "clip",
-            padding: "4 6",
+            padding: "3 6",
             corner_radius: "4",
             background: "{bg}",
+            border: "{border}",
             direction: "horizontal",
             spacing: "5",
             cross_align: "center",

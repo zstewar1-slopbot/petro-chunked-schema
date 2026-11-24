@@ -22,7 +22,6 @@ mod browser;
 mod cli;
 mod editor_ops;
 mod gamedata;
-#[allow(dead_code)]
 mod schema_nav;
 mod state;
 mod ui;

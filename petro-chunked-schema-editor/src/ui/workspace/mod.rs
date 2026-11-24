@@ -1,4 +1,4 @@
-//! Three-pane main workspace shell combining the chunk tree, hex inspector, and schema editor.
+//! Three-pane main workspace shell combining the chunk tree, hex inspector, and schema stack.
 
 mod chunk_tree;
 mod hex_inspector;
@@ -14,7 +14,7 @@ use hex_inspector::HexInspectorPane;
 use schema_editor::SchemaEditorPane;
 
 /// Main horizontal 3-pane workspace: chunk/mini-chunk tree (left), color-coded hex inspector
-/// (center), and interactive schema editor (right).
+/// (center), and non-indenting interactive schema stack (right).
 #[component]
 pub fn Workspace() -> Element {
     let state = use_context::<EditorState>();
@@ -34,8 +34,8 @@ pub fn Workspace() -> Element {
             direction: "horizontal",
 
             ChunkTreePane {}
-            HexInspectorPane { node: selected_node.clone() }
-            SchemaEditorPane { node: selected_node }
+            HexInspectorPane { node: selected_node }
+            SchemaEditorPane {}
         }
     }
 }
