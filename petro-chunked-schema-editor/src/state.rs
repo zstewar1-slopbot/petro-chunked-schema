@@ -109,17 +109,9 @@ impl Default for PersistedState {
 }
 
 impl PersistedState {
-    /// Returns the path to `state.json` inside the OS user configuration directory.
+    /// Returns the path to `state.json` inside the OS user configuration directory (via [`dirs::config_dir`]).
     pub fn config_file_path() -> PathBuf {
-        let base = if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            PathBuf::from(xdg)
-        } else if let Some(appdata) = std::env::var_os("APPDATA") {
-            PathBuf::from(appdata)
-        } else if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(".config")
-        } else {
-            PathBuf::from(".")
-        };
+        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
         base.join("petro-chunked-schema-editor").join("state.json")
     }
 

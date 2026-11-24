@@ -8,7 +8,8 @@ description = "Freya-based graphical schema editor and hex inspector for Petrogl
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-freya = "0.3"
+dirs = "6"
+freya = "0.5"
 petro-chunked.workspace = true
 petro-chunked-schema = { path = "../petro-chunked-schema", features = ["known-formats", "codegen"] }
 petro-meg.workspace = true

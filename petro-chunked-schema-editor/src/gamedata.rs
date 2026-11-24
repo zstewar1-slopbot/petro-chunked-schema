@@ -323,8 +323,7 @@ pub fn detect_default_gamedata_dirs() -> Vec<PathBuf> {
         }
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = dirs::home_dir() {
         for steam_root in [
             home.join(".local/share/Steam/steamapps/common/Star Wars Empire at War"),
             home.join(".steam/steam/steamapps/common/Star Wars Empire at War"),

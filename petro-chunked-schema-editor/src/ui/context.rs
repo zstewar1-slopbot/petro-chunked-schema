@@ -1,9 +1,10 @@
-//! Shared reactive editor state and domain actions provided via Dioxus/Freya context.
+//! Shared global reactive editor state and multi-window modal management for Freya 0.5.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use freya::prelude::*;
+use freya::winit::window::WindowId;
 use petro_chunked_schema::dynamic::{DynamicFile, LoadOptions, load_dynamic_file};
 use petro_chunked_schema::resolve::{ResolvedSchema, SchemaLoader};
 use petro_chunked_schema::schema::Schema;
@@ -16,27 +17,58 @@ use crate::schema_nav::{
 };
 use crate::state::{FileSource, PersistedState};
 
-/// Which centered overlay modal dialog is currently active above the main 3-pane workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveModal {
-    /// No modal open.
-    None,
-    /// Hierarchical disk & browse-into-`.meg` file browser dialog.
+use super::modals::modal_window_root;
+use super::theme;
+
+/// Freestanding secondary OS window kinds managed by [`EditorState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModalKind {
+    /// Hierarchical disk & browse-into-`.meg` file browser window.
     OpenFile,
-    /// `GameData` directory configuration and visual folder picker dialog.
+    /// `GameData` directory configuration and visual folder picker window.
     GameDataDirs,
-    /// Unified Open Schema dialog (built-in formats + YAML file browser + manual URI).
+    /// Unified Open Schema window (built-in formats + YAML file browser + manual URI).
     OpenSchema,
-    /// Visual Save Schema As dialog for choosing a destination YAML path.
+    /// Visual Save Schema As window for choosing a destination YAML path.
     SaveSchemaAs,
     /// Unsaved schema changes confirmation dialog (`Save & Continue` / `Discard` / `Cancel`).
     ConfirmDiscard,
-    /// Live read-only YAML schema serialization viewer.
+    /// Live read-only YAML schema serialization viewer window.
     YamlPreview,
-    /// Batch schema validator across all configured `GameData` directories.
+    /// Batch schema validator window scanning all configured `GameData` directories.
     BatchValidate,
-    /// Live `petro-chunked-derive` Rust code generator & `.rs` exporter.
+    /// Live `petro-chunked-derive` Rust code generator & `.rs` exporter window.
     RustCodegen,
+}
+
+impl ModalKind {
+    /// Native OS window title for this modal kind.
+    pub fn window_title(self) -> &'static str {
+        match self {
+            Self::OpenFile => "Open Game File or Browse .meg Archive",
+            Self::GameDataDirs => "Configure GameData Directories",
+            Self::OpenSchema => "Open Schema (Built-in Formats & YAML Files)",
+            Self::SaveSchemaAs => "Save Schema As YAML",
+            Self::ConfirmDiscard => "Unsaved Schema Changes",
+            Self::YamlPreview => "Live Schema YAML",
+            Self::BatchValidate => "Batch Validate Across GameData & .meg Archives",
+            Self::RustCodegen => "Generated Rust Code (petro-chunked-derive)",
+        }
+    }
+
+    /// Initial `(width, height)` logical window size in pixels.
+    pub fn window_size(self) -> (f64, f64) {
+        match self {
+            Self::OpenFile => (940.0, 620.0),
+            Self::GameDataDirs => (900.0, 610.0),
+            Self::OpenSchema => (920.0, 610.0),
+            Self::SaveSchemaAs => (880.0, 580.0),
+            Self::ConfirmDiscard => (540.0, 225.0),
+            Self::YamlPreview => (880.0, 600.0),
+            Self::BatchValidate => (900.0, 580.0),
+            Self::RustCodegen => (940.0, 620.0),
+        }
+    }
 }
 
 /// Schema-replacing action deferred while asking the user whether to save or discard unsaved
@@ -59,54 +91,53 @@ impl PendingSchemaAction {
     }
 }
 
-/// Shared reactive state handle for the editor, accessible in any child component via
-/// `use_context::<EditorState>()`.
+/// Global reactive state shared across the main editor window and all freestanding modal windows.
 #[derive(Clone, Copy)]
 pub struct EditorState {
     /// Persistent session settings saved to disk on edits.
-    pub persisted: Signal<PersistedState>,
+    pub persisted: State<PersistedState>,
     /// Active editable root [`Schema`] (updated live in memory).
-    pub schema: Signal<Schema>,
+    pub schema: State<Schema>,
     /// Resolved multi-module graph for [`Self::schema`] (including any `imports`).
-    pub resolved_schema: Signal<ResolvedSchema>,
+    pub resolved_schema: State<ResolvedSchema>,
     /// Baseline YAML snapshot corresponding to the last loaded or saved schema state.
-    pub saved_schema_yaml: Signal<String>,
+    pub saved_schema_yaml: State<String>,
     /// `true` when the active in-memory schema differs from [`Self::saved_schema_yaml`].
-    pub is_schema_dirty: Signal<bool>,
+    pub is_schema_dirty: State<bool>,
     /// Deferred schema replacement awaiting confirmation when [`Self::is_schema_dirty`] is `true`.
-    pub pending_schema_action: Signal<Option<PendingSchemaAction>>,
+    pub pending_schema_action: State<Option<PendingSchemaAction>>,
     /// Raw bytes of the currently opened chunked binary file.
-    pub raw_file_bytes: Signal<Vec<u8>>,
+    pub raw_file_bytes: State<Vec<u8>>,
     /// Dynamically parsed & schema-annotated representation of [`Self::raw_file_bytes`].
-    pub dynamic_file: Signal<Option<DynamicFile>>,
+    pub dynamic_file: State<Option<DynamicFile>>,
     /// Currently selected chunk/mini-chunk tree path (e.g. `"0"`, `"0/1"`, `"0/1/mc2"`).
-    pub selected_tree_path: Signal<String>,
+    pub selected_tree_path: State<String>,
     /// Tree paths currently collapsed in the left-pane tree view.
-    pub collapsed_paths: Signal<BTreeSet<String>>,
+    pub collapsed_paths: State<BTreeSet<String>>,
     /// Right-rail non-indenting schema stack from root down to the currently focused level.
-    pub schema_stack: Signal<Vec<SchemaStackStep>>,
+    pub schema_stack: State<Vec<SchemaStackStep>>,
     /// Indices of ancestor cards in [`Self::schema_stack`] currently expanded by the user.
-    pub expanded_stack_levels: Signal<BTreeSet<usize>>,
+    pub expanded_stack_levels: State<BTreeSet<usize>>,
     /// Schema type or field currently hovered in the right rail for left-rail match highlighting.
-    pub hovered_schema_target: Signal<Option<HoveredSchemaTarget>>,
+    pub hovered_schema_target: State<Option<HoveredSchemaTarget>>,
     /// Selected byte offset inside the currently inspected leaf chunk or mini-chunk payload.
-    pub selected_byte_offset: Signal<usize>,
+    pub selected_byte_offset: State<usize>,
     /// Active 512-byte page index in the hex grid.
-    pub hex_page: Signal<usize>,
-    /// Active centered overlay dialog.
-    pub active_modal: Signal<ActiveModal>,
+    pub hex_page: State<usize>,
+    /// Currently open freestanding modal windows keyed by [`ModalKind`].
+    pub open_windows: State<HashMap<ModalKind, WindowId>>,
     /// Single-line status feedback displayed in the status bar.
-    pub status_msg: Signal<String>,
+    pub status_msg: State<String>,
 }
 
-/// Initializes [`EditorState`], registers it as Freya root context, and restores the previously
-/// opened file (if any) once on mount.
-pub fn use_init_editor_state() -> EditorState {
-    let initial_persisted = use_hook(PersistedState::load);
-    let (initial_schema, initial_resolved) = use_hook(|| initial_persisted.resolve_initial_schema());
-    let (initial_baseline_yaml, initial_dirty) = use_hook(|| {
+impl EditorState {
+    /// Creates the global [`EditorState`] prior to launching the Freya 0.5 event loop and restores
+    /// the previously opened binary file and schema snapshot if present.
+    pub fn new_global() -> Self {
+        let initial_persisted = PersistedState::load();
+        let (initial_schema, initial_resolved) = initial_persisted.resolve_initial_schema();
         let current_yaml = initial_schema.to_yaml_string().unwrap_or_default();
-        let baseline = match &initial_persisted.schema_ref {
+        let baseline_yaml = match &initial_persisted.schema_ref {
             Some(sref) => load_schema_from_ref(sref)
                 .ok()
                 .and_then(|(s, _)| s.to_yaml_string().ok())
@@ -115,51 +146,13 @@ pub fn use_init_editor_state() -> EditorState {
                 .to_yaml_string()
                 .unwrap_or_else(|_| current_yaml.clone()),
         };
-        let dirty = current_yaml != baseline;
-        (baseline, dirty)
-    });
+        let initial_dirty = current_yaml != baseline_yaml;
 
-    let persisted = use_signal(|| initial_persisted.clone());
-    let schema = use_signal(|| initial_schema);
-    let resolved_schema = use_signal(|| initial_resolved.clone());
-    let saved_schema_yaml = use_signal(|| initial_baseline_yaml);
-    let is_schema_dirty = use_signal(|| initial_dirty);
-    let pending_schema_action = use_signal(|| None::<PendingSchemaAction>);
-    let raw_file_bytes = use_signal(Vec::<u8>::new);
-    let dynamic_file = use_signal(|| None::<DynamicFile>);
-    let selected_tree_path = use_signal(|| "0".to_owned());
-    let collapsed_paths = use_signal(BTreeSet::<String>::new);
-    let schema_stack = use_signal(|| build_root_stack(&initial_resolved));
-    let expanded_stack_levels = use_signal(BTreeSet::<usize>::new);
-    let hovered_schema_target = use_signal(|| None::<HoveredSchemaTarget>);
-    let selected_byte_offset = use_signal(|| 0usize);
-    let hex_page = use_signal(|| 0usize);
-    let active_modal = use_signal(|| ActiveModal::None);
-    let status_msg = use_signal(|| "Ready.".to_owned());
+        let mut initial_bytes = Vec::new();
+        let mut initial_df = None;
+        let mut initial_stack = build_root_stack(&initial_resolved);
+        let mut initial_status = "Ready.".to_owned();
 
-    let mut state = EditorState {
-        persisted,
-        schema,
-        resolved_schema,
-        saved_schema_yaml,
-        is_schema_dirty,
-        pending_schema_action,
-        raw_file_bytes,
-        dynamic_file,
-        selected_tree_path,
-        collapsed_paths,
-        schema_stack,
-        expanded_stack_levels,
-        hovered_schema_target,
-        selected_byte_offset,
-        hex_page,
-        active_modal,
-        status_msg,
-    };
-
-    use_context_provider(|| state);
-
-    use_hook(move || {
         if let Some(src) = &initial_persisted.last_file {
             match load_file_bytes(src) {
                 Ok(bytes) => {
@@ -167,38 +160,119 @@ pub fn use_init_editor_state() -> EditorState {
                         LoadOptions::for_ui(initial_persisted.forced_plain_paths_for(Some(src)));
                     match load_dynamic_file(&bytes, Some(&initial_resolved), &opts) {
                         Ok(df) => {
-                            let stack =
-                                resolve_schema_stack_for_file_node(&df, &initial_resolved, "0");
-                            state.status_msg.set(format!(
+                            initial_status = format!(
                                 "Restored {} ({} bytes, {} diagnostics)",
                                 src.display_label(),
                                 bytes.len(),
                                 df.diagnostics.len()
-                            ));
-                            state.raw_file_bytes.set(bytes);
-                            state.dynamic_file.set(Some(df));
-                            state.schema_stack.set(stack);
+                            );
+                            initial_stack =
+                                resolve_schema_stack_for_file_node(&df, &initial_resolved, "0");
+                            initial_bytes = bytes;
+                            initial_df = Some(df);
                         }
                         Err(e) => {
-                            state
-                                .status_msg
-                                .set(format!("Failed to parse {}: {e}", src.display_label()));
+                            initial_status = format!("Failed to parse {}: {e}", src.display_label());
                         }
                     }
                 }
                 Err(e) => {
-                    state
-                        .status_msg
-                        .set(format!("Could not open previous file: {e}"));
+                    initial_status = format!("Could not open previous file: {e}");
                 }
             }
         }
-    });
 
-    state
-}
+        Self {
+            persisted: State::create_global(initial_persisted),
+            schema: State::create_global(initial_schema),
+            resolved_schema: State::create_global(initial_resolved),
+            saved_schema_yaml: State::create_global(baseline_yaml),
+            is_schema_dirty: State::create_global(initial_dirty),
+            pending_schema_action: State::create_global(None),
+            raw_file_bytes: State::create_global(initial_bytes),
+            dynamic_file: State::create_global(initial_df),
+            selected_tree_path: State::create_global("0".to_owned()),
+            collapsed_paths: State::create_global(BTreeSet::new()),
+            schema_stack: State::create_global(initial_stack),
+            expanded_stack_levels: State::create_global(BTreeSet::new()),
+            hovered_schema_target: State::create_global(None),
+            selected_byte_offset: State::create_global(0),
+            hex_page: State::create_global(0),
+            open_windows: State::create_global(HashMap::new()),
+            status_msg: State::create_global(initial_status),
+        }
+    }
 
-impl EditorState {
+    /// Retrieves the global [`EditorState`] inside any component in any window.
+    pub fn current() -> Self {
+        consume_root_context::<Self>()
+    }
+
+    /// Returns `true` if a freestanding window of `kind` is currently open.
+    pub fn is_modal_open(&self, kind: ModalKind) -> bool {
+        self.open_windows.read().contains_key(&kind)
+    }
+
+    /// Opens a freestanding OS window for `kind`, or focuses it if it is already open.
+    pub fn open_modal(&mut self, kind: ModalKind) {
+        if let Some(&wid) = self.open_windows.read().get(&kind) {
+            Platform::get().focus_window(wid);
+            return;
+        }
+        let mut state = *self;
+        let (w, h) = kind.window_size();
+        let title = kind.window_title();
+        spawn_in_window(async move {
+            let wid = Platform::get()
+                .launch_window(
+                    WindowConfig::new(move || modal_window_root(kind))
+                        .with_size(w, h)
+                        .with_title(title)
+                        .with_background(theme::BG_MODAL)
+                        .with_on_close(move |_, closed_id| {
+                            state.on_modal_window_closed(kind, closed_id);
+                            CloseDecision::Close
+                        }),
+                )
+                .await;
+            state.open_windows.write().insert(kind, wid);
+        });
+    }
+
+    /// Closes the freestanding window for `kind` if it is currently open.
+    pub fn close_modal(&mut self, kind: ModalKind) {
+        let wid = self.open_windows.write().remove(&kind);
+        if let Some(wid) = wid {
+            Platform::get().close_window(wid);
+        }
+    }
+
+    /// Closes the currently executing freestanding modal window.
+    pub fn close_current_modal_window(&mut self) {
+        let wid = Platform::window_id();
+        self.open_windows.write().retain(|_, id| *id != wid);
+        Platform::get().close_window(wid);
+    }
+
+    /// Closes all open freestanding modal windows (called when the main editor window closes).
+    pub fn close_all_modals(&mut self) {
+        let wids: Vec<WindowId> = self.open_windows.write().drain().map(|(_, id)| id).collect();
+        let platform = Platform::get();
+        for wid in wids {
+            platform.close_window(wid);
+        }
+    }
+
+    fn on_modal_window_closed(&mut self, kind: ModalKind, closed_id: WindowId) {
+        let mut map = self.open_windows.write();
+        if map.get(&kind) == Some(&closed_id) {
+            map.remove(&kind);
+        }
+        if kind == ModalKind::ConfirmDiscard {
+            self.pending_schema_action.set(None);
+        }
+    }
+
     /// Loads a chunked binary file from disk or `.meg`, evaluates it against the active schema,
     /// and updates persisted session state.
     pub fn open_file(&mut self, src: FileSource) {
@@ -243,34 +317,34 @@ impl EditorState {
         }
     }
 
-    /// Requests loading `schema_ref` (`builtin:...` or YAML file path), prompting the user first
-    /// if the active schema has unsaved in-memory edits.
+    /// Requests loading `schema_ref` (`builtin:...` or YAML file path), opening the freestanding
+    /// confirmation dialog first if the active schema has unsaved in-memory edits.
     pub fn request_load_schema_ref(&mut self, schema_ref: SchemaRef) {
         if *self.is_schema_dirty.read() {
             self.pending_schema_action
                 .set(Some(PendingSchemaAction::LoadSchemaRef(schema_ref)));
-            self.active_modal.set(ActiveModal::ConfirmDiscard);
+            self.open_modal(ModalKind::ConfirmDiscard);
         } else {
             self.load_schema_ref_now(schema_ref);
-            self.active_modal.set(ActiveModal::None);
+            self.close_modal(ModalKind::OpenSchema);
         }
     }
 
-    /// Requests starting a fresh blank `CustomFormat` schema, prompting the user first if the
-    /// active schema has unsaved in-memory edits.
+    /// Requests starting a fresh blank `CustomFormat` schema, opening the freestanding
+    /// confirmation dialog first if the active schema has unsaved in-memory edits.
     pub fn request_new_blank_schema(&mut self) {
         if *self.is_schema_dirty.read() {
             self.pending_schema_action
                 .set(Some(PendingSchemaAction::NewBlankSchema));
-            self.active_modal.set(ActiveModal::ConfirmDiscard);
+            self.open_modal(ModalKind::ConfirmDiscard);
         } else {
             self.start_blank_schema_now();
-            self.active_modal.set(ActiveModal::None);
+            self.close_modal(ModalKind::OpenSchema);
         }
     }
 
     /// Saves the active schema to its current YAML file path (`Ctrl+S`), or opens the
-    /// `SaveSchemaAs` dialog if the active schema is built-in or has not yet been saved to disk.
+    /// freestanding `Save Schema As` window if the active schema is built-in or unsaved.
     pub fn save_schema(&mut self) {
         let current_ref = self.persisted.read().schema_ref.clone();
         match current_ref {
@@ -278,7 +352,7 @@ impl EditorState {
                 self.save_schema_as(path);
             }
             _ => {
-                self.active_modal.set(ActiveModal::SaveSchemaAs);
+                self.open_modal(ModalKind::SaveSchemaAs);
                 self.status_msg.set(
                     "Built-in or unsaved schema — choose a YAML destination file to save."
                         .to_owned(),
@@ -289,7 +363,7 @@ impl EditorState {
 
     /// Saves the active schema to `path`, clears the dirty flag, updates the persisted
     /// [`SchemaRef`], and completes any deferred [`PendingSchemaAction`] queued from
-    /// [`ActiveModal::ConfirmDiscard`].
+    /// [`ModalKind::ConfirmDiscard`].
     pub fn save_schema_as(&mut self, path: PathBuf) -> bool {
         let cur_schema = self.schema.read().clone();
         match save_schema_to_path(&cur_schema, &path) {
@@ -312,10 +386,12 @@ impl EditorState {
                     .set(format!("Saved schema to {}", path.display()));
 
                 let pending = self.pending_schema_action.write().take();
+                self.close_modal(ModalKind::SaveSchemaAs);
+                self.close_modal(ModalKind::ConfirmDiscard);
                 if let Some(action) = pending {
                     self.execute_pending_action(action);
+                    self.close_modal(ModalKind::OpenSchema);
                 }
-                self.active_modal.set(ActiveModal::None);
                 true
             }
             Err(e) => {
@@ -325,9 +401,7 @@ impl EditorState {
         }
     }
 
-    /// Handles `"Save & Continue"` in [`ActiveModal::ConfirmDiscard`]: saves directly when a file
-    /// path exists, or transitions to [`ActiveModal::SaveSchemaAs`] while keeping the pending
-    /// action queued.
+    /// Handles `"Save & Continue"` in [`ModalKind::ConfirmDiscard`].
     pub fn save_and_continue_pending(&mut self) {
         let current_ref = self.persisted.read().schema_ref.clone();
         match current_ref {
@@ -335,27 +409,28 @@ impl EditorState {
                 self.save_schema_as(path);
             }
             _ => {
-                self.active_modal.set(ActiveModal::SaveSchemaAs);
+                self.close_modal(ModalKind::ConfirmDiscard);
+                self.open_modal(ModalKind::SaveSchemaAs);
                 self.status_msg
                     .set("Choose a YAML file to save changes before continuing.".to_owned());
             }
         }
     }
 
-    /// Handles `"Discard Changes"` in [`ActiveModal::ConfirmDiscard`]: drops unsaved edits and
-    /// runs the deferred schema switch immediately.
+    /// Handles `"Discard Changes"` in [`ModalKind::ConfirmDiscard`].
     pub fn discard_and_continue_pending(&mut self) {
         let pending = self.pending_schema_action.write().take();
-        self.active_modal.set(ActiveModal::None);
+        self.close_modal(ModalKind::ConfirmDiscard);
         if let Some(action) = pending {
             self.execute_pending_action(action);
+            self.close_modal(ModalKind::OpenSchema);
         }
     }
 
-    /// Cancels any pending discard action and closes the active modal dialog.
+    /// Cancels any pending discard action and closes the confirmation / save-as dialog.
     pub fn cancel_pending_action(&mut self) {
         self.pending_schema_action.set(None);
-        self.active_modal.set(ActiveModal::None);
+        self.close_current_modal_window();
     }
 
     fn execute_pending_action(&mut self, action: PendingSchemaAction) {
@@ -586,22 +661,6 @@ impl EditorState {
     /// Expands all nodes in the chunk tree.
     pub fn expand_all(&mut self) {
         self.collapsed_paths.write().clear();
-    }
-
-    /// Opens or toggles a centered modal dialog.
-    pub fn toggle_modal(&mut self, modal: ActiveModal) {
-        let current = *self.active_modal.read();
-        if current == modal {
-            self.cancel_pending_action();
-        } else {
-            self.pending_schema_action.set(None);
-            self.active_modal.set(modal);
-        }
-    }
-
-    /// Closes any open modal dialog and clears any pending discard action.
-    pub fn close_modal(&mut self) {
-        self.cancel_pending_action();
     }
 
     /// Updates the status bar text.

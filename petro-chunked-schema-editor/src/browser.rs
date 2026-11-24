@@ -593,8 +593,7 @@ pub fn default_quick_places(game_data_dirs: &[PathBuf]) -> Vec<QuickPlace> {
         push_dir("Workspace".to_owned(), sub, cwd);
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let home_path = PathBuf::from(home);
+    if let Some(home_path) = dirs::home_dir() {
         push_dir("Home".to_owned(), None, home_path);
     }
 

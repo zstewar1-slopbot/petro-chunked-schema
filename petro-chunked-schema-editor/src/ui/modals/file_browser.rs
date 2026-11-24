@@ -1,4 +1,4 @@
-//! Centered hierarchical file browser modal with native browse-into-`.meg` archive support.
+//! Freestanding hierarchical file browser window with native browse-into-`.meg` archive support.
 
 use freya::prelude::*;
 
@@ -9,9 +9,9 @@ use crate::browser::{
 use crate::state::FileSource;
 use crate::ui::context::EditorState;
 use crate::ui::theme;
-use crate::ui::widgets::{ActionButton, ButtonStyle, SegmentedChip, StyledInput};
+use crate::ui::widgets::{ButtonStyle, action_button, segmented_chip, styled_input};
 
-use super::{BrowserNavBar, ModalDialog, QuickPlacesSidebar};
+use super::{browser_nav_bar, quick_places_sidebar};
 
 const EXT_PRESETS: [(&str, Option<&str>); 5] = [
     ("All", None),
@@ -21,322 +21,316 @@ const EXT_PRESETS: [(&str, Option<&str>); 5] = [
     (".bui", Some("bui")),
 ];
 
-/// Centered dialog for browsing local directories and stepping inside Petroglyph `.meg` archives
-/// as virtual folders to open game files.
-#[component]
-pub fn FileBrowserModal() -> Element {
-    let mut state = use_context::<EditorState>();
-    let game_data_dirs = state.persisted.read().game_data_dirs.clone();
-    let active_file = state.persisted.read().last_file.clone();
+/// Freestanding window for browsing local directories and stepping inside Petroglyph `.meg`
+/// archives as virtual folders to open game files.
+#[derive(PartialEq)]
+pub struct FileBrowserWindow;
 
-    let mut location = use_signal(|| initial_browse_location(&game_data_dirs, active_file.as_ref()));
-    let mut ext_filter = use_signal(|| Some("alo".to_owned()));
-    let mut name_filter = use_signal(String::new);
-    let mut recursive_in_meg = use_signal(|| true);
-    let mut selected_source = use_signal(|| None::<(FileSource, String)>);
+impl Component for FileBrowserWindow {
+    fn render(&self) -> impl IntoElement {
+        let state = EditorState::current();
+        let game_data_dirs = state.persisted.read().game_data_dirs.clone();
+        let active_file = state.persisted.read().last_file.clone();
 
-    let current_loc = location.read().clone();
-    let in_meg = matches!(current_loc, BrowseLocation::MegDir { .. });
-    let places = default_quick_places(&game_data_dirs);
+        let mut location = use_state(|| initial_browse_location(&game_data_dirs, active_file.as_ref()));
+        let ext_filter = use_state(|| Some("alo".to_owned()));
+        let name_filter = use_state(String::new);
+        let mut recursive_in_meg = use_state(|| true);
+        let mut selected_source = use_state(|| None::<(FileSource, String)>);
 
-    let browse_opts = BrowseOptions {
-        dirs_only: false,
-        allow_meg_browse: true,
-        extensions: ext_filter.read().iter().cloned().collect(),
-        name_filter: name_filter.read().clone(),
-        recursive_in_meg: *recursive_in_meg.read(),
-        show_hidden: false,
-        max_entries: 500,
-    };
+        let current_loc = location.read().clone();
+        let in_meg = matches!(current_loc, BrowseLocation::MegDir { .. });
+        let places = default_quick_places(&game_data_dirs);
 
-    let listing = list_location(&current_loc, &browse_opts);
-    let entry_count = listing.as_ref().map_or(0, Vec::len);
-    let selected_now = selected_source.read().clone();
+        let browse_opts = BrowseOptions {
+            dirs_only: false,
+            allow_meg_browse: true,
+            extensions: ext_filter.read().iter().cloned().collect(),
+            name_filter: name_filter.read().clone(),
+            recursive_in_meg: *recursive_in_meg.read(),
+            show_hidden: false,
+            max_entries: 500,
+        };
 
-    rsx! {
-        ModalDialog {
-            title: "Open Game File or Browse Inside .meg Archive".to_owned(),
-            width: "940".to_owned(),
-            height: "610".to_owned(),
+        let listing = list_location(&current_loc, &browse_opts);
+        let entry_count = listing.as_ref().map_or(0, Vec::len);
+        let selected_now = selected_source.read().clone();
 
-            BrowserNavBar {
-                location: current_loc.clone(),
-                onnavigate: move |next| {
-                    selected_source.set(None);
-                    location.set(next);
-                },
-            }
+        let ext_chips: Vec<Element> = EXT_PRESETS
+            .into_iter()
+            .map(|(preset_label, preset_ext)| {
+                let is_sel = ext_filter.read().as_deref() == preset_ext;
+                let target_ext = preset_ext.map(str::to_owned);
+                let mut ef = ext_filter;
+                let mut sel = selected_source;
+                segmented_chip(preset_label, is_sel, true, move || {
+                    ef.set(target_ext.clone());
+                    sel.set(None);
+                })
+            })
+            .collect();
 
-            rect {
-                width: "fill",
-                direction: "horizontal",
-                cross_align: "center",
-                spacing: "8",
-
-                label {
-                    font_size: "11",
-                    color: theme::TEXT_MUTED,
-                    "Type:"
-                }
-                for (preset_label, preset_ext) in EXT_PRESETS {
-                    {
-                        let is_sel = ext_filter.read().as_deref() == preset_ext;
-                        let target_ext = preset_ext.map(str::to_owned);
-                        rsx! {
-                            SegmentedChip {
-                                key: "{preset_label}",
-                                label: preset_label.to_owned(),
-                                selected: is_sel,
-                                compact: Some(true),
-                                onpress: move |_| {
-                                    ext_filter.set(target_ext.clone());
-                                    selected_source.set(None);
-                                },
+        let list_body: Element = match listing {
+            Ok(entries) if entries.is_empty() => rect()
+                .width(Size::fill())
+                .padding(16.0)
+                .child(
+                    label()
+                        .font_size(12.0)
+                        .color(theme::TEXT_MUTED)
+                        .text(format!(
+                            "No matching files or folders in {}.",
+                            location_display(&current_loc)
+                        )),
+                )
+                .into(),
+            Ok(entries) => {
+                let rows: Vec<Element> = entries
+                    .into_iter()
+                    .map(|entry| {
+                        let is_sel = entry.file_source.is_some()
+                            && selected_now.as_ref().map(|(s, _)| s) == entry.file_source.as_ref();
+                        let bg = if is_sel {
+                            theme::BG_ROW_SELECTED
+                        } else {
+                            theme::BG_ROW
+                        };
+                        let badge_color = match entry.kind {
+                            BrowseEntryKind::Directory | BrowseEntryKind::MegVirtualDir => {
+                                theme::ACCENT_BLUE
                             }
-                        }
-                    }
-                }
-
-                label {
-                    font_size: "11",
-                    color: theme::TEXT_MUTED,
-                    "Filter:"
-                }
-                StyledInput {
-                    width: Some("230".to_owned()),
-                    value: name_filter.read().clone(),
-                    placeholder: Some("name substring (e.g. tiefighter)...".to_owned()),
-                    onchange: move |txt| name_filter.set(txt),
-                }
-
-                if in_meg {
-                    SegmentedChip {
-                        label: "Search Inside .meg".to_owned(),
-                        selected: *recursive_in_meg.read(),
-                        compact: Some(true),
-                        onpress: move |_| {
-                            let cur = *recursive_in_meg.read();
-                            recursive_in_meg.set(!cur);
-                        },
-                    }
-                }
-
-                label {
-                    font_size: "11",
-                    color: theme::TEXT_DIM,
-                    max_lines: "1",
-                    "{entry_count} item(s)"
-                }
-            }
-
-            rect {
-                width: "fill",
-                height: "flex(1)",
-                content: "flex",
-                direction: "horizontal",
-                spacing: "10",
-
-                QuickPlacesSidebar {
-                    places: places,
-                    current_location: current_loc.clone(),
-                    onnavigate: move |next| {
-                        selected_source.set(None);
-                        location.set(next);
-                    },
-                }
-
-                rect {
-                    width: "flex(1)",
-                    height: "fill",
-                    content: "flex",
-                    padding: "6",
-                    corner_radius: "5",
-                    background: theme::BG_INSET,
-                    border: "1 solid rgb(46, 51, 66)",
-                    direction: "vertical",
-                    spacing: "4",
-
-                    rect {
-                        width: "fill",
-                        height: "22",
-                        padding: "0 6",
-                        border: "0 0 1 0 solid rgb(42, 46, 60)",
-                        direction: "horizontal",
-                        cross_align: "center",
-                        spacing: "8",
-                        overflow: "clip",
-                        label { width: "44", font_size: "10", font_weight: "bold", color: theme::TEXT_DIM, max_lines: "1", "KIND" }
-                        label { width: "540", font_size: "10", font_weight: "bold", color: theme::TEXT_DIM, max_lines: "1", "NAME" }
-                        label { width: "80", font_size: "10", font_weight: "bold", color: theme::TEXT_DIM, max_lines: "1", "SIZE" }
-                    }
-
-                    match listing {
-                        Ok(entries) if entries.is_empty() => rsx! {
-                            rect {
-                                width: "fill",
-                                padding: "16",
-                                label {
-                                    font_size: "12",
-                                    color: theme::TEXT_MUTED,
-                                    "No matching files or folders in {location_display(&current_loc)}."
-                                }
+                            BrowseEntryKind::MegArchive => theme::ACCENT_AMBER,
+                            BrowseEntryKind::DiskFile | BrowseEntryKind::MegFile => {
+                                theme::ACCENT_GREEN
                             }
-                        },
-                        Ok(entries) => rsx! {
-                            ScrollView {
-                                width: "fill",
-                                height: "flex(1)",
-                                rect {
-                                    width: "fill",
-                                    direction: "vertical",
-                                    spacing: "2",
+                        };
+                        let name_color = match entry.kind {
+                            BrowseEntryKind::MegArchive => theme::ACCENT_AMBER,
+                            _ => theme::TEXT_PRIMARY,
+                        };
+                        let size_txt = entry
+                            .size
+                            .map(format_size_compact)
+                            .unwrap_or_else(|| "—".to_owned());
+                        let target_loc = entry.target_location.clone();
+                        let file_src = entry.file_source.clone();
+                        let entry_name = entry.name.clone();
+                        let badge_txt = entry.kind.badge();
+                        let is_nav = entry.kind.is_navigable();
+                        let mut st = state;
+                        let mut loc_st = location;
+                        let mut sel_st = selected_source;
 
-                                    for entry in entries {
-                                        {
-                                            let is_sel = entry.file_source.is_some()
-                                                && selected_now.as_ref().map(|(s, _)| s) == entry.file_source.as_ref();
-                                            let bg = if is_sel {
-                                                theme::BG_ROW_SELECTED
-                                            } else {
-                                                theme::BG_ROW
-                                            };
-                                            let badge_color = match entry.kind {
-                                                BrowseEntryKind::Directory | BrowseEntryKind::MegVirtualDir => theme::ACCENT_BLUE,
-                                                BrowseEntryKind::MegArchive => theme::ACCENT_AMBER,
-                                                BrowseEntryKind::DiskFile | BrowseEntryKind::MegFile => theme::ACCENT_GREEN,
-                                            };
-                                            let name_color = match entry.kind {
-                                                BrowseEntryKind::Directory | BrowseEntryKind::MegVirtualDir => theme::TEXT_PRIMARY,
-                                                BrowseEntryKind::MegArchive => theme::ACCENT_AMBER,
-                                                BrowseEntryKind::DiskFile | BrowseEntryKind::MegFile => theme::TEXT_PRIMARY,
-                                            };
-                                            let size_txt = entry
-                                                .size
-                                                .map(format_size_compact)
-                                                .unwrap_or_else(|| "—".to_owned());
-                                            let target_loc = entry.target_location.clone();
-                                            let file_src = entry.file_source.clone();
-                                            let entry_name = entry.name.clone();
-                                            let badge_txt = entry.kind.badge();
-                                            rsx! {
-                                                rect {
-                                                    width: "fill",
-                                                    height: "28",
-                                                    padding: "0 6",
-                                                    corner_radius: "3",
-                                                    background: "{bg}",
-                                                    direction: "horizontal",
-                                                    cross_align: "center",
-                                                    spacing: "8",
-                                                    overflow: "clip",
-                                                    onpointerdown: move |_| {
-                                                        if let Some(next_loc) = target_loc.clone() {
-                                                            selected_source.set(None);
-                                                            location.set(next_loc);
-                                                        } else if let Some(src) = file_src.clone() {
-                                                            if is_sel {
-                                                                state.open_file(src);
-                                                                state.close_modal();
-                                                            } else {
-                                                                selected_source.set(Some((src, entry_name.clone())));
-                                                            }
-                                                        }
-                                                    },
-
-                                                    label {
-                                                        width: "44",
-                                                        font_size: "10",
-                                                        font_weight: "bold",
-                                                        font_family: "monospace",
-                                                        color: "{badge_color}",
-                                                        max_lines: "1",
-                                                        "[{badge_txt}]"
-                                                    }
-                                                    label {
-                                                        width: "540",
-                                                        font_size: "12",
-                                                        font_weight: if entry.kind.is_navigable() { "bold" } else { "normal" },
-                                                        color: "{name_color}",
-                                                        max_lines: "1",
-                                                        "{entry.name}"
-                                                    }
-                                                    label {
-                                                        width: "80",
-                                                        font_size: "11",
-                                                        font_family: "monospace",
-                                                        color: theme::TEXT_DIM,
-                                                        max_lines: "1",
-                                                        "{size_txt}"
-                                                    }
-                                                }
-                                            }
-                                        }
+                        rect()
+                            .width(Size::fill())
+                            .height(Size::px(28.0))
+                            .padding((0.0, 6.0))
+                            .corner_radius(3.0)
+                            .background(bg)
+                            .horizontal()
+                            .cross_align(Alignment::Center)
+                            .spacing(8.0)
+                            .overflow(Overflow::Clip)
+                            .on_pointer_down(move |_| {
+                                if let Some(next_loc) = target_loc.clone() {
+                                    sel_st.set(None);
+                                    loc_st.set(next_loc);
+                                } else if let Some(src) = file_src.clone() {
+                                    if is_sel {
+                                        st.open_file(src);
+                                        st.close_current_modal_window();
+                                    } else {
+                                        sel_st.set(Some((src, entry_name.clone())));
                                     }
                                 }
-                            }
-                        },
-                        Err(err) => rsx! {
-                            rect {
-                                width: "fill",
-                                padding: "12",
-                                label {
-                                    font_size: "12",
-                                    color: theme::ACCENT_RED,
-                                    "{err}"
-                                }
-                            }
-                        },
-                    }
-                }
+                            })
+                            .child(
+                                label()
+                                    .width(Size::px(44.0))
+                                    .font_size(10.0)
+                                    .font_weight(FontWeight::BOLD)
+                                    .font_family("monospace")
+                                    .color(badge_color)
+                                    .max_lines(1)
+                                    .text(format!("[{badge_txt}]")),
+                            )
+                            .child(
+                                label()
+                                    .width(Size::px(540.0))
+                                    .font_size(12.0)
+                                    .font_weight(if is_nav {
+                                        FontWeight::BOLD
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
+                                    .color(name_color)
+                                    .max_lines(1)
+                                    .text(entry.name),
+                            )
+                            .child(
+                                label()
+                                    .width(Size::px(80.0))
+                                    .font_size(11.0)
+                                    .font_family("monospace")
+                                    .color(theme::TEXT_DIM)
+                                    .max_lines(1)
+                                    .text(size_txt),
+                            )
+                            .into()
+                    })
+                    .collect();
+
+                ScrollView::new()
+                    .width(Size::fill())
+                    .height(Size::flex(1.0))
+                    .child(rect().width(Size::fill()).vertical().spacing(2.0).children(rows))
+                    .into()
             }
+            Err(err) => rect()
+                .width(Size::fill())
+                .padding(12.0)
+                .child(label().font_size(12.0).color(theme::ACCENT_RED).text(err))
+                .into(),
+        };
 
-            rect {
-                width: "fill",
-                height: "32",
-                direction: "horizontal",
-                main_align: "space-between",
-                cross_align: "center",
-                spacing: "10",
+        let nav_handler = move |next: BrowseLocation| {
+            selected_source.set(None);
+            location.set(next);
+        };
 
-                if let Some((_, sel_label)) = &selected_now {
-                    label {
-                        font_size: "12",
-                        color: theme::ACCENT_GREEN,
-                        max_lines: "1",
-                        "Selected: {sel_label}  (click again or press Open)"
-                    }
-                } else {
-                    label {
-                        font_size: "11",
-                        color: theme::TEXT_DIM,
-                        max_lines: "1",
-                        "Click a folder or .meg archive to browse inside; click a file to select."
-                    }
-                }
+        let mut st_cancel = state;
+        let mut st_open = state;
 
-                rect {
-                    direction: "horizontal",
-                    spacing: "8",
-                    cross_align: "center",
-
-                    ActionButton {
-                        label: "Cancel".to_owned(),
-                        style: ButtonStyle::Secondary,
-                        onpress: move |_| state.close_modal(),
-                    }
-
-                    if let Some((src, _)) = selected_now {
-                        ActionButton {
-                            label: "Open File".to_owned(),
-                            style: ButtonStyle::Primary,
-                            onpress: move |_| {
-                                state.open_file(src.clone());
-                                state.close_modal();
-                            },
-                        }
-                    }
-                }
-            }
-        }
+        rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .content(Content::Flex)
+            .vertical()
+            .spacing(10.0)
+            .child(browser_nav_bar(&current_loc, nav_handler))
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(8.0)
+                    .child(
+                        label()
+                            .font_size(11.0)
+                            .color(theme::TEXT_MUTED)
+                            .text("Type:"),
+                    )
+                    .children(ext_chips)
+                    .child(
+                        label()
+                            .font_size(11.0)
+                            .color(theme::TEXT_MUTED)
+                            .text("Filter:"),
+                    )
+                    .child(styled_input(
+                        Size::px(220.0),
+                        name_filter,
+                        "name substring (e.g. tiefighter)...",
+                    ))
+                    .maybe_child(in_meg.then(|| {
+                        let cur = *recursive_in_meg.read();
+                        segmented_chip("Search Inside .meg", cur, true, move || {
+                            recursive_in_meg.set(!cur);
+                        })
+                    }))
+                    .child(
+                        label()
+                            .font_size(11.0)
+                            .color(theme::TEXT_DIM)
+                            .max_lines(1)
+                            .text(format!("{entry_count} item(s)")),
+                    ),
+            )
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .height(Size::flex(1.0))
+                    .content(Content::Flex)
+                    .horizontal()
+                    .spacing(10.0)
+                    .child(quick_places_sidebar(places, &current_loc, nav_handler))
+                    .child(
+                        rect()
+                            .width(Size::flex(1.0))
+                            .height(Size::fill())
+                            .content(Content::Flex)
+                            .padding(6.0)
+                            .corner_radius(5.0)
+                            .background(theme::BG_INSET)
+                            .border(theme::border_all(theme::BORDER_CARD))
+                            .vertical()
+                            .spacing(4.0)
+                            .child(
+                                rect()
+                                    .width(Size::fill())
+                                    .height(Size::px(22.0))
+                                    .padding((0.0, 6.0))
+                                    .border(theme::border_bottom(theme::BORDER_CARD))
+                                    .horizontal()
+                                    .cross_align(Alignment::Center)
+                                    .spacing(8.0)
+                                    .overflow(Overflow::Clip)
+                                    .child(hdr(44.0, "KIND"))
+                                    .child(hdr(540.0, "NAME"))
+                                    .child(hdr(80.0, "SIZE")),
+                            )
+                            .child(list_body),
+                    ),
+            )
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .height(Size::px(32.0))
+                    .horizontal()
+                    .main_align(Alignment::SpaceBetween)
+                    .cross_align(Alignment::Center)
+                    .spacing(10.0)
+                    .child(if let Some((_, sel_label)) = &selected_now {
+                        label()
+                            .font_size(12.0)
+                            .color(theme::ACCENT_GREEN)
+                            .max_lines(1)
+                            .text(format!(
+                                "Selected: {sel_label}  (click again or press Open File)"
+                            ))
+                    } else {
+                        label()
+                            .font_size(11.0)
+                            .color(theme::TEXT_DIM)
+                            .max_lines(1)
+                            .text("Click a folder or .meg archive to browse inside; click a file to select.")
+                    })
+                    .child(
+                        rect()
+                            .horizontal()
+                            .spacing(8.0)
+                            .cross_align(Alignment::Center)
+                            .child(action_button("Cancel", ButtonStyle::Secondary, false, move || {
+                                st_cancel.close_current_modal_window();
+                            }))
+                            .maybe_child(selected_now.map(|(src, _)| {
+                                action_button("Open File", ButtonStyle::Primary, false, move || {
+                                    st_open.open_file(src.clone());
+                                    st_open.close_current_modal_window();
+                                })
+                            })),
+                    ),
+            )
     }
+}
+
+fn hdr(w: f32, text: &'static str) -> Element {
+    label()
+        .width(Size::px(w))
+        .font_size(10.0)
+        .font_weight(FontWeight::BOLD)
+        .color(theme::TEXT_DIM)
+        .max_lines(1)
+        .text(text)
+        .into()
 }

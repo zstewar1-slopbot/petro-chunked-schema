@@ -1,4 +1,4 @@
-//! Modular Freya 0.3 GUI tree for `petro-chunked-schema-editor`.
+//! Modular Freya 0.5 multi-window GUI for `petro-chunked-schema-editor`.
 
 pub mod context;
 pub mod modals;
@@ -9,51 +9,58 @@ pub mod workspace;
 
 use freya::prelude::*;
 
-use context::{ActiveModal, use_init_editor_state};
-use modals::ModalHost;
+use context::{EditorState, ModalKind};
 use toolbar::{StatusBar, Toolbar};
 use workspace::Workspace;
 
-/// Top-level Freya application component with global keyboard shortcuts (`Ctrl+S`,
-/// `Ctrl+Shift+S`, `Escape`) and centered overlay modal hosting.
-pub fn app() -> Element {
-    use_init_theme(|| DARK_THEME);
-    let mut state = use_init_editor_state();
+/// Launches the multi-window Freya 0.5 editor application with shared global [`EditorState`].
+pub fn launch_editor() {
+    let mut state = EditorState::new_global();
+    launch(
+        LaunchConfig::new()
+            .with_global_context(state)
+            .with_exit_on_close(true)
+            .with_window(
+                WindowConfig::new(main_window_app)
+                    .with_size(1480.0, 920.0)
+                    .with_title("Petro Chunked Schema Editor")
+                    .with_background(theme::BG_ROOT)
+                    .with_on_close(move |_, _| {
+                        state.close_all_modals();
+                        CloseDecision::Close
+                    }),
+            ),
+    );
+}
 
-    rsx! {
-        rect {
-            width: "fill",
-            height: "fill",
-            content: "flex",
-            background: theme::BG_ROOT,
-            color: theme::TEXT_PRIMARY,
-            font_size: "12",
-            direction: "vertical",
-            onglobalkeydown: move |e: KeyboardEvent| {
-                let ctrl = e.modifiers.contains(Modifiers::CONTROL);
-                let shift = e.modifiers.contains(Modifiers::SHIFT);
-                if ctrl {
-                    if let Key::Character(ch) = &e.key
-                        && ch.eq_ignore_ascii_case("s")
-                    {
-                        if shift {
-                            state.pending_schema_action.set(None);
-                            state.active_modal.set(ActiveModal::SaveSchemaAs);
-                        } else {
-                            state.save_schema();
-                        }
-                    }
-                } else if e.key == Key::Escape
-                    && *state.active_modal.read() != ActiveModal::None
-                {
-                    state.cancel_pending_action();
+fn main_window_app() -> impl IntoElement {
+    use_init_theme(dark_theme);
+    let mut state = EditorState::current();
+
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .content(Content::Flex)
+        .background(theme::BG_ROOT)
+        .color(theme::TEXT_PRIMARY)
+        .font_size(12.0)
+        .vertical()
+        .on_global_key_down(move |e: Event<KeyboardEventData>| {
+            let ctrl = e.modifiers.contains(Modifiers::CONTROL);
+            let shift = e.modifiers.contains(Modifiers::SHIFT);
+            if ctrl
+                && let Key::Character(ch) = &e.key
+                && ch.eq_ignore_ascii_case("s")
+            {
+                if shift {
+                    state.pending_schema_action.set(None);
+                    state.open_modal(ModalKind::SaveSchemaAs);
+                } else {
+                    state.save_schema();
                 }
-            },
-
-            Toolbar {}
-            StatusBar {}
-            Workspace {}
-            ModalHost {}
-        }
-    }
+            }
+        })
+        .child(Toolbar)
+        .child(StatusBar)
+        .child(Workspace)
 }
