@@ -1,0 +1,533 @@
+name: AloParticle
+description: Petroglyph Alamo Particle System (.alo) format
+file_extensions:
+  - alo
+root:
+  description: Single top-level particle system chunk (0x00000900)
+  mode: sequence
+  ignore_unknown: false
+  fields:
+    - name: system
+      description: Particle system definition
+      cardinality: required
+      source_kind: id
+      id: 0x00000900
+      payload_kind: children
+      payload_type: ParticleSystem
+types:
+  ParticleSystem:
+    kind: chunks
+    description: Particle system container (0x00000900)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: name
+        cardinality: required
+        source_kind: id
+        id: 0x00000000
+        payload_kind: data
+        payload_type: c_string
+      - name: id
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: data
+        payload_type: u32
+      - name: persist
+        cardinality: optional
+        source_kind: id
+        id: 0x00000002
+        payload_kind: data
+        payload_type: bool
+        wire_format: U8Bool
+      - name: emitters
+        cardinality: required
+        source_kind: id
+        id: 0x00000800
+        payload_kind: children
+        payload_type: ParticleEmitters
+  ParticleEmitters:
+    kind: chunks
+    description: Container of particle emitter chunks (0x00000800)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: emitters
+        cardinality: repeated
+        source_kind: id
+        id: 0x00000700
+        payload_kind: children
+        payload_type: ParticleEmitter
+  EmitterProperties:
+    kind: mini_chunks
+    description: Particle emitter configuration properties (chunk 0x00000002)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 4
+        name: blend_mode
+        cardinality: required
+        ty: u32
+      - id: 5
+        name: primitive_type
+        cardinality: required
+        ty: u32
+      - id: 6
+        name: unused1
+        cardinality: optional
+        ty: u32
+      - id: 7
+        name: in_bursts
+        cardinality: required
+        ty: bool
+        wire_format: U8Bool
+      - id: 8
+        name: link_to_system
+        cardinality: required
+        ty: bool
+        wire_format: U8Bool
+      - id: 9
+        name: inward_speed
+        cardinality: required
+        ty: f32
+      - id: 10
+        name: acceleration
+        cardinality: required
+        ty: vec3
+      - id: 11
+        name: outward_acceleration
+        cardinality: required
+        ty: f32
+      - id: 12
+        name: gravity
+        cardinality: required
+        ty: f32
+      - id: 15
+        name: lifetime
+        cardinality: required
+        ty: f32
+      - id: 16
+        name: num_texture_elements
+        cardinality: required
+        ty: u32
+      - id: 17
+        name: unused2
+        cardinality: optional
+        ty: f32
+      - id: 18
+        name: randomized_scale
+        cardinality: required
+        ty: f32
+      - id: 19
+        name: randomized_lifetime
+        cardinality: required
+        ty: f32
+      - id: 20
+        name: index
+        cardinality: required
+        ty: u32
+      - id: 21
+        name: unused3
+        cardinality: optional
+        ty: u8
+      - id: 23
+        name: randomized_rotation
+        cardinality: required
+        ty: f32
+      - id: 35
+        name: rotation_direction
+        cardinality: required
+        ty: bool
+        wire_format: U8Bool
+      - id: 36
+        name: initial_delay
+        cardinality: required
+        ty: f32
+      - id: 37
+        name: burst_delay
+        cardinality: required
+        ty: f32
+      - id: 38
+        name: num_particles_per_burst
+        cardinality: required
+        ty: u32
+      - id: 39
+        name: num_bursts
+        cardinality: required
+        ty: u32
+      - id: 40
+        name: emitter_speed_mult
+        cardinality: required
+        ty: f32
+      - id: 42
+        name: num_particles_per_second
+        cardinality: required
+        ty: u32
+      - id: 43
+        name: unused4
+        cardinality: optional
+        ty: u8
+      - id: 44
+        name: randomized_color
+        cardinality: optional
+        ty: vec4
+      - id: 45
+        name: randomized_is_grayscale
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 46
+        name: is_not_billboarded
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 47
+        name: ground_interaction
+        cardinality: optional
+        ty: u32
+      - id: 48
+        name: bounciness
+        cardinality: optional
+        ty: f32
+      - id: 49
+        name: affected_by_wind
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 50
+        name: freeze_time
+        cardinality: optional
+        ty: f32
+      - id: 51
+        name: skip_time
+        cardinality: optional
+        ty: f32
+      - id: 52
+        name: emit_mode
+        cardinality: optional
+        ty: u32
+      - id: 53
+        name: object_space_acceleration
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 59
+        name: is_heat_particle
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 60
+        name: emit_offset
+        cardinality: optional
+        ty: f32
+      - id: 61
+        name: is_weather_particle
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 62
+        name: weather_cube_size
+        cardinality: optional
+        ty: f32
+      - id: 63
+        name: unused5
+        cardinality: optional
+        ty: f32
+      - id: 64
+        name: unused6
+        cardinality: optional
+        ty: f32
+      - id: 65
+        name: has_tail
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 66
+        name: tail_size
+        cardinality: optional
+        ty: f32
+      - id: 67
+        name: use_emitter_speed_mult
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 68
+        name: wind_disturbance
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 70
+        name: no_depth_test
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 71
+        name: weather_cube_distance
+        cardinality: optional
+        ty: f32
+      - id: 72
+        name: fixed_rotation
+        cardinality: optional
+        ty: bool
+        wire_format: U8Bool
+      - id: 73
+        name: unknown_73
+        cardinality: optional
+        ty: f32
+  EmitterGroupData:
+    kind: byte_block
+    description: 64-byte volume specification for velocity, lifetime, or position (0x00001101)
+    fields:
+      - name: group_type
+        ty: u32
+      - name: min
+        ty: vec3
+      - name: max
+        ty: vec3
+      - name: side_length
+        ty: f32
+      - name: sphere_radius
+        ty: f32
+      - name: sphere_surface
+        ty: bool
+        wire_format: U32Bool
+      - name: cylinder_radius
+        ty: f32
+      - name: cylinder_surface
+        ty: bool
+        wire_format: U32Bool
+      - name: cylinder_height
+        ty: f32
+      - name: exact_value
+        ty: vec3
+  EmitterGroup:
+    kind: chunks
+    description: Single property group wrapper (0x00001100)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00001101
+        payload_kind: data
+        payload_type:
+          named: EmitterGroupData
+  EmitterGroups:
+    kind: chunks
+    description: Initial velocity, lifetime, and position groups (0x00000029)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: velocity
+        cardinality: required
+        source_kind: id
+        id: 0x00001100
+        payload_kind: children
+        payload_type: EmitterGroup
+      - name: lifetime
+        cardinality: required
+        source_kind: id
+        id: 0x00001100
+        payload_kind: children
+        payload_type: EmitterGroup
+      - name: position
+        cardinality: required
+        source_kind: id
+        id: 0x00001100
+        payload_kind: children
+        payload_type: EmitterGroup
+  ByteTrackProps:
+    kind: mini_chunks
+    description: 8-bit keyframe bounds and interpolation for RGBA tracks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 2
+        name: first_key
+        cardinality: required
+        ty: u8
+      - id: 3
+        name: last_key
+        cardinality: required
+        ty: u8
+      - id: 4
+        name: interpolation
+        cardinality: required
+        ty: u32
+  ByteTrackData:
+    kind: mini_chunks
+    description: Intermediate (u32 value, f32 time) keyframes for RGBA tracks
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 5
+        name: keys
+        cardinality: repeated
+        ty:
+          tuple:
+            - u32
+            - f32
+  ByteTrack:
+    kind: chunk_stream_seq
+    description: Pair of (0x00000000 props, 0x00000001 keys) chunks for an RGBA color channel track
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: props
+        cardinality: required
+        source_kind: id
+        id: 0x00000000
+        payload_kind: mini_chunks
+        payload_type: ByteTrackProps
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: mini_chunks
+        payload_type: ByteTrackData
+  FloatTrackProps:
+    kind: mini_chunks
+    description: 32-bit float keyframe bounds and interpolation for size/texture/rotation tracks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 2
+        name: first_key
+        cardinality: required
+        ty: f32
+      - id: 3
+        name: last_key
+        cardinality: required
+        ty: f32
+      - id: 4
+        name: interpolation
+        cardinality: required
+        ty: u32
+  FloatTrackData:
+    kind: mini_chunks
+    description: Intermediate (f32 value, f32 time) keyframes for size/texture/rotation tracks
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 5
+        name: keys
+        cardinality: repeated
+        ty:
+          tuple:
+            - f32
+            - f32
+  FloatTrack:
+    kind: chunk_stream_seq
+    description: Pair of (0x00000000 props, 0x00000001 keys) chunks for a float track
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: props
+        cardinality: required
+        source_kind: id
+        id: 0x00000000
+        payload_kind: mini_chunks
+        payload_type: FloatTrackProps
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: mini_chunks
+        payload_type: FloatTrackData
+  EmitterTracks:
+    kind: chunks
+    description: Seven positional keyframe tracks (R, G, B, A, size, texture_index, rotation_speed) in chunk 0x00000001
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: red
+        cardinality: required
+        source_kind: stream
+        item_type: ByteTrack
+      - name: green
+        cardinality: required
+        source_kind: stream
+        item_type: ByteTrack
+      - name: blue
+        cardinality: required
+        source_kind: stream
+        item_type: ByteTrack
+      - name: alpha
+        cardinality: required
+        source_kind: stream
+        item_type: ByteTrack
+      - name: size
+        cardinality: required
+        source_kind: stream
+        item_type: FloatTrack
+      - name: texture_index
+        cardinality: required
+        source_kind: stream
+        item_type: FloatTrack
+      - name: rotation_speed
+        cardinality: required
+        source_kind: stream
+        item_type: FloatTrack
+  EmitterConnections:
+    kind: mini_chunks
+    description: Death and birth sub-emitter indices (chunk 0x00000036)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 0x37
+        name: death_emitter
+        cardinality: required
+        ty: u32
+      - id: 0x39
+        name: birth_emitter
+        cardinality: required
+        ty: u32
+  ParticleEmitter:
+    kind: chunks
+    description: Single particle emitter container (0x00000700)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: properties
+        cardinality: required
+        source_kind: id
+        id: 0x00000002
+        payload_kind: mini_chunks
+        payload_type: EmitterProperties
+      - name: color_texture
+        cardinality: required
+        source_kind: id
+        id: 0x00000003
+        payload_kind: data
+        payload_type: c_string
+      - name: name
+        cardinality: required
+        source_kind: id
+        id: 0x00000016
+        payload_kind: data
+        payload_type: c_string
+      - name: groups
+        cardinality: required
+        source_kind: id
+        id: 0x00000029
+        payload_kind: children
+        payload_type: EmitterGroups
+      - name: tracks
+        cardinality: required
+        source_kind: id
+        id: 0x00000001
+        payload_kind: children
+        payload_type: EmitterTracks
+      - name: connections
+        cardinality: optional
+        source_kind: id
+        id: 0x00000036
+        payload_kind: mini_chunks
+        payload_type: EmitterConnections
+      - name: secondary_texture
+        cardinality: optional
+        source_kind: id
+        id: 0x00000045
+        payload_kind: data
+        payload_type: c_string

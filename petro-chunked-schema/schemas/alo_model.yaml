@@ -1,0 +1,700 @@
+name: AloModel
+description: Petroglyph Alamo 3D Object Model (.alo) format
+file_extensions:
+  - alo
+root:
+  description: Top-level ALO model chunks (skeleton, meshes/lights, connections, and optional embedded particle systems)
+  mode: map
+  ignore_unknown: false
+  fields:
+    - name: skeleton
+      description: Acyclic tree of bones defining model hierarchy and transforms
+      cardinality: optional
+      source_kind: id
+      id: 0x00000200
+      payload_kind: children
+      payload_type: Skeleton
+    - name: objects
+      description: Interleaved mesh and light objects whose relative order determines connection object indices
+      cardinality: repeated
+      source_kind: stream
+      item_type: Object
+    - name: connections
+      description: Connections wiring meshes, lights, proxies, and dazzles to skeleton bones
+      cardinality: optional
+      source_kind: id
+      id: 0x00000600
+      payload_kind: children
+      payload_type: Connections
+    - name: particles
+      description: Optional embedded particle systems
+      cardinality: repeated
+      source_kind: id
+      id: 0x00000900
+      payload_kind: ignore
+types:
+  Object:
+    kind: chunk_enum
+    description: Connectible top-level object (Mesh or Light)
+    variants:
+      - name: Mesh
+        source_kind: id
+        id: 0x00000400
+        payload_kind: children
+        payload_type: Mesh
+      - name: Light
+        source_kind: id
+        id: 0x00001300
+        payload_kind: children
+        payload_type: Light
+  SkeletonHeader:
+    kind: byte_block
+    description: Skeleton header with bone count and 124 bytes of zero padding
+    pad_after: 124
+    fields:
+      - name: bone_count
+        ty: usize
+        wire_format: U32Usize
+  Skeleton:
+    kind: chunks
+    description: Skeleton container (0x00000200)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: header
+        cardinality: required
+        source_kind: id
+        id: 0x00000201
+        payload_kind: data
+        payload_type:
+          named: SkeletonHeader
+      - name: bones
+        cardinality: repeated
+        source_kind: id
+        id: 0x00000202
+        payload_kind: children
+        payload_type: Bone
+  BoneDataV1:
+    kind: byte_block
+    description: Version 1 bone data (0x00000205, without billboard mode)
+    fields:
+      - name: parent
+        ty: u32
+      - name: visible
+        ty: bool
+        wire_format: U32Bool
+      - name: matrix
+        ty: mat3x4
+  BoneDataV2:
+    kind: byte_block
+    description: Version 2 bone data (0x00000206, with billboard mode)
+    fields:
+      - name: parent
+        ty: u32
+      - name: visible
+        ty: bool
+        wire_format: U32Bool
+      - name: billboard
+        ty: u32
+      - name: matrix
+        ty: mat3x4
+  BoneData:
+    kind: chunk_enum
+    description: Bone data chunk (v1 0x00000205 or v2 0x00000206)
+    variants:
+      - name: V1
+        source_kind: id
+        id: 0x00000205
+        payload_kind: data
+        payload_type:
+          named: BoneDataV1
+      - name: V2
+        source_kind: id
+        id: 0x00000206
+        payload_kind: data
+        payload_type:
+          named: BoneDataV2
+  Bone:
+    kind: chunks
+    description: Single bone container (0x00000202)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: name
+        cardinality: required
+        source_kind: id
+        id: 0x00000203
+        payload_kind: data
+        payload_type: c_string
+      - name: data
+        cardinality: required
+        source_kind: stream
+        item_type: BoneData
+  LightInfo:
+    kind: byte_block
+    description: Light properties (0x00001302)
+    fields:
+      - name: light_type
+        ty: u32
+      - name: color
+        ty: vec3
+      - name: intensity
+        ty: f32
+      - name: far_attenuation_end
+        ty: f32
+      - name: far_attenuation_start
+        ty: f32
+      - name: hotspot_size
+        ty: f32
+      - name: falloff_size
+        ty: f32
+  Light:
+    kind: chunks
+    description: Light object container (0x00001300)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: name
+        cardinality: required
+        source_kind: id
+        id: 0x00001301
+        payload_kind: data
+        payload_type: c_string
+      - name: info
+        cardinality: required
+        source_kind: id
+        id: 0x00001302
+        payload_kind: data
+        payload_type:
+          named: LightInfo
+  MeshInfo:
+    kind: byte_block
+    description: Mesh header (0x00000402)
+    pad_after: 88
+    fields:
+      - name: submesh_count
+        ty: usize
+        wire_format: U32Usize
+      - name: bounds_min
+        ty: vec3
+      - name: bounds_max
+        ty: vec3
+      - name: unknown
+        ty: u32
+      - name: hidden
+        ty: bool
+        wire_format: U32Bool
+      - name: collision_enabled
+        ty: bool
+        wire_format: U32Bool
+  Mesh:
+    kind: chunks
+    description: Mesh container (0x00000400)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: name
+        cardinality: required
+        source_kind: id
+        id: 0x00000401
+        payload_kind: data
+        payload_type: c_string
+      - name: info
+        cardinality: required
+        source_kind: id
+        id: 0x00000402
+        payload_kind: data
+        payload_type:
+          named: MeshInfo
+      - name: submeshes
+        cardinality: repeated
+        source_kind: stream
+        item_type: Submesh
+  Submesh:
+    kind: chunk_stream_seq
+    description: Pair of sibling chunks (0x00010100 material and 0x00010000 data)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: material
+        cardinality: required
+        source_kind: id
+        id: 0x00010100
+        payload_kind: children
+        payload_type: Shader
+      - name: data
+        cardinality: required
+        source_kind: id
+        id: 0x00010000
+        payload_kind: children
+        payload_type: SubmeshData
+  IntShaderParam:
+    kind: mini_chunks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 2
+        name: value
+        cardinality: required
+        ty: i32
+  FloatShaderParam:
+    kind: mini_chunks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 2
+        name: value
+        cardinality: required
+        ty: f32
+  Float3ShaderParam:
+    kind: mini_chunks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 2
+        name: value
+        cardinality: required
+        ty: vec3
+  TextureShaderParam:
+    kind: mini_chunks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 2
+        name: value
+        cardinality: required
+        ty: path
+  Float4ShaderParam:
+    kind: mini_chunks
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 2
+        name: value
+        cardinality: required
+        ty: vec4
+  ShaderParam:
+    kind: chunk_enum
+    description: Typed shader parameter chunk inside 0x00010100
+    variants:
+      - name: Int
+        source_kind: id
+        id: 0x00010102
+        payload_kind: mini_chunks
+        payload_type: IntShaderParam
+      - name: Float
+        source_kind: id
+        id: 0x00010103
+        payload_kind: mini_chunks
+        payload_type: FloatShaderParam
+      - name: Float3
+        source_kind: id
+        id: 0x00010104
+        payload_kind: mini_chunks
+        payload_type: Float3ShaderParam
+      - name: Texture
+        source_kind: id
+        id: 0x00010105
+        payload_kind: mini_chunks
+        payload_type: TextureShaderParam
+      - name: Float4
+        source_kind: id
+        id: 0x00010106
+        payload_kind: mini_chunks
+        payload_type: Float4ShaderParam
+  Shader:
+    kind: chunks
+    description: Submesh material / shader definition (0x00010100)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: filename
+        cardinality: required
+        source_kind: id
+        id: 0x00010101
+        payload_kind: data
+        payload_type: c_string
+      - name: params
+        cardinality: repeated
+        source_kind: stream
+        item_type: ShaderParam
+  SubmeshInfo:
+    kind: byte_block
+    description: Submesh header (0x00010001)
+    pad_after: 120
+    fields:
+      - name: num_vertices
+        ty: usize
+        wire_format: U32Usize
+      - name: num_primitives
+        ty: usize
+        wire_format: U32Usize
+  VertexV1:
+    kind: byte_block
+    description: Version 1 vertex record (0x00010005)
+    fields:
+      - name: position
+        ty: vec3
+      - name: normal
+        ty: vec3
+      - name: tex_coords
+        ty:
+          array:
+            elem: vec2
+            len: 4
+      - name: tangent
+        ty: vec3
+      - name: binormal
+        ty: vec3
+      - name: color
+        ty: vec4
+      - name: bone_indices
+        ty:
+          array:
+            elem: u32
+            len: 4
+      - name: bone_weights
+        ty:
+          array:
+            elem: f32
+            len: 4
+  VertexV2:
+    kind: byte_block
+    description: Version 2 vertex record (0x00010007)
+    fields:
+      - name: position
+        ty: vec3
+      - name: normal
+        ty: vec3
+      - name: tex_coords
+        ty:
+          array:
+            elem: vec2
+            len: 4
+      - name: tangent
+        ty: vec3
+      - name: binormal
+        ty: vec3
+      - name: color
+        ty: vec4
+      - name: unknown
+        ty: vec4
+      - name: bone_indices
+        ty:
+          array:
+            elem: u32
+            len: 4
+      - name: bone_weights
+        ty:
+          array:
+            elem: f32
+            len: 4
+  VertexBuffer:
+    kind: chunk_enum
+    description: Submesh vertex buffer chunk (v1 0x00010005 or v2 0x00010007)
+    variants:
+      - name: V1
+        source_kind: id
+        id: 0x00010005
+        payload_kind: data
+        payload_type:
+          list:
+            named: VertexV1
+      - name: V2
+        source_kind: id
+        id: 0x00010007
+        payload_kind: data
+        payload_type:
+          list:
+            named: VertexV2
+  CollisionTreeHeader:
+    kind: mini_chunks
+    description: Collision tree bounding box and counts (0x00001201)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 0
+        name: box_min
+        cardinality: required
+        ty: vec3
+      - id: 1
+        name: box_max
+        cardinality: required
+        ty: vec3
+      - id: 2
+        name: num_nodes
+        cardinality: required
+        ty: u32
+      - id: 3
+        name: num_primitives
+        cardinality: required
+        ty: u32
+  CollisionNode:
+    kind: byte_block
+    description: 10-byte AABB node in 0x00001202
+    fields:
+      - name: min
+        ty:
+          array:
+            elem: u8
+            len: 3
+      - name: max
+        ty:
+          array:
+            elem: u8
+            len: 3
+      - name: num_primitives
+        ty: u16
+      - name: link
+        ty: u16
+  CollisionTree:
+    kind: chunks
+    description: Submesh spatial collision tree (0x00001200)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: header
+        cardinality: required
+        source_kind: id
+        id: 0x00001201
+        payload_kind: mini_chunks
+        payload_type: CollisionTreeHeader
+      - name: nodes
+        cardinality: required
+        source_kind: id
+        id: 0x00001202
+        payload_kind: data
+        payload_type:
+          list:
+            named: CollisionNode
+      - name: triangle_mapping
+        cardinality: required
+        source_kind: id
+        id: 0x00001203
+        payload_kind: data
+        payload_type:
+          list: u16
+  SubmeshData:
+    kind: chunks
+    description: Submesh geometry and collision data (0x00010000)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: info
+        cardinality: required
+        source_kind: id
+        id: 0x00010001
+        payload_kind: data
+        payload_type:
+          named: SubmeshInfo
+      - name: vertex_format
+        cardinality: required
+        source_kind: id
+        id: 0x00010002
+        payload_kind: data
+        payload_type: c_string
+      - name: primitives
+        cardinality: required
+        source_kind: id
+        id: 0x00010004
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: u16
+              len: 3
+      - name: bone_mappings
+        cardinality: default
+        source_kind: id
+        id: 0x00010006
+        payload_kind: data
+        payload_type:
+          list: usize
+        wire_format: U32UsizeVec
+      - name: vertices
+        cardinality: required
+        source_kind: stream
+        item_type: VertexBuffer
+      - name: collision
+        cardinality: optional
+        source_kind: id
+        id: 0x00001200
+        payload_kind: children
+        payload_type: CollisionTree
+  ConnectionCount:
+    kind: mini_chunks
+    description: Connection counts (0x00000601)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: object_count
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 4
+        name: proxy_count
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 9
+        name: dazzle_count
+        cardinality: optional
+        ty: usize
+        wire_format: U32Usize
+  ObjectConnection:
+    kind: mini_chunks
+    description: Mesh/Light to bone connection (0x00000602)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 2
+        name: object
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 3
+        name: bone
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+  ProxyConnection:
+    kind: mini_chunks
+    description: External proxy attachment to bone (0x00000603)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 5
+        name: proxy_name
+        cardinality: required
+        ty: c_string
+      - id: 6
+        name: bone
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 7
+        name: hidden
+        cardinality: default
+        ty: bool
+        wire_format: U32Bool
+      - id: 8
+        name: alt_decrease_stay_hidden
+        cardinality: default
+        ty: bool
+        wire_format: U32Bool
+  DazzleConnection:
+    kind: mini_chunks
+    description: Blinking 2D sprite attachment (0x00000604)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 0
+        name: color
+        cardinality: required
+        ty: vec3
+      - id: 1
+        name: position
+        cardinality: required
+        ty: vec3
+      - id: 2
+        name: radius
+        cardinality: required
+        ty: f32
+      - id: 3
+        name: tex_x
+        cardinality: required
+        ty: u32
+      - id: 4
+        name: tex_y
+        cardinality: required
+        ty: u32
+      - id: 5
+        name: texture
+        cardinality: required
+        ty: c_string
+      - id: 6
+        name: tex_size
+        cardinality: required
+        ty: u32
+      - id: 7
+        name: frequency
+        cardinality: required
+        ty: f32
+      - id: 8
+        name: phase
+        cardinality: required
+        ty: f32
+      - id: 9
+        name: night_only
+        cardinality: required
+        ty: bool
+        wire_format: U32Bool
+      - id: 10
+        name: bone
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 11
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 12
+        name: is_hidden
+        cardinality: required
+        ty: bool
+        wire_format: U32Bool
+      - id: 13
+        name: bias
+        cardinality: optional
+        ty: f32
+  Connections:
+    kind: chunks
+    description: Connections container (0x00000600)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - name: count
+        cardinality: required
+        source_kind: id
+        id: 0x00000601
+        payload_kind: mini_chunks
+        payload_type: ConnectionCount
+      - name: objects
+        cardinality: repeated
+        source_kind: id
+        id: 0x00000602
+        payload_kind: mini_chunks
+        payload_type: ObjectConnection
+      - name: proxies
+        cardinality: repeated
+        source_kind: id
+        id: 0x00000603
+        payload_kind: mini_chunks
+        payload_type: ProxyConnection
+      - name: dazzles
+        cardinality: repeated
+        source_kind: id
+        id: 0x00000604
+        payload_kind: mini_chunks
+        payload_type: DazzleConnection

@@ -1,0 +1,208 @@
+name: AlaAnimation
+description: Petroglyph Alamo Animation (.ala) format (supporting both Format #1 and Format #2)
+file_extensions:
+  - ala
+root:
+  description: Single top-level animation chunk (0x00001000)
+  mode: sequence
+  ignore_unknown: false
+  fields:
+    - name: animation
+      description: Root animation container
+      cardinality: required
+      source_kind: id
+      id: 0x00001000
+      payload_kind: children
+      payload_type: AlaFile
+types:
+  AnimationHeader:
+    kind: mini_chunks
+    description: Animation file header (chunk 0x00001001)
+    mode: sequence
+    ignore_unknown: false
+    fields:
+      - id: 1
+        name: num_frames
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 2
+        name: fps
+        cardinality: required
+        ty: f32
+      - id: 3
+        name: num_bones
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 11
+        name: rot_frame_size
+        cardinality: optional
+        ty: usize
+        wire_format: U32Usize
+      - id: 12
+        name: tra_frame_size
+        cardinality: optional
+        ty: usize
+        wire_format: U32Usize
+      - id: 13
+        name: sca_frame_size
+        cardinality: optional
+        ty: usize
+        wire_format: U32Usize
+  BoneAnimationHeader:
+    kind: mini_chunks
+    description: Per-bone animation header (chunk 0x00001003)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - id: 4
+        name: name
+        cardinality: required
+        ty: c_string
+      - id: 5
+        name: bone_index
+        cardinality: required
+        ty: usize
+        wire_format: U32Usize
+      - id: 6
+        name: trans_offset
+        cardinality: required
+        ty: vec3
+      - id: 7
+        name: trans_scale
+        cardinality: required
+        ty: vec3
+      - id: 8
+        name: scale_offset
+        cardinality: required
+        ty: vec3
+      - id: 9
+        name: scale_scale
+        cardinality: required
+        ty: vec3
+      - id: 10
+        name: unknown_prop
+        cardinality: optional
+        ty: u32
+      - id: 14
+        name: translation_index
+        cardinality: optional
+        ty: u16
+      - id: 15
+        name: scale_index
+        cardinality: optional
+        ty: u16
+      - id: 16
+        name: rotation_index
+        cardinality: optional
+        ty: u16
+      - id: 17
+        name: default_rotation
+        cardinality: optional
+        ty:
+          array:
+            elem: i16
+            len: 4
+  BoneAnimation:
+    kind: chunks
+    description: Per-bone animation track data (chunk 0x00001002)
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: header
+        cardinality: required
+        source_kind: id
+        id: 0x00001003
+        payload_kind: mini_chunks
+        payload_type: BoneAnimationHeader
+      - name: translations
+        cardinality: optional
+        source_kind: id
+        id: 0x00001004
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: u16
+              len: 3
+      - name: scales
+        cardinality: optional
+        source_kind: id
+        id: 0x00001005
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: u16
+              len: 3
+      - name: rotations
+        cardinality: optional
+        source_kind: id
+        id: 0x00001006
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: i16
+              len: 4
+      - name: visibility
+        cardinality: optional
+        source_kind: id
+        id: 0x00001007
+        payload_kind: data
+        payload_type: raw_bytes
+      - name: step
+        cardinality: optional
+        source_kind: id
+        id: 0x00001008
+        payload_kind: data
+        payload_type: raw_bytes
+  AlaFile:
+    kind: chunks
+    description: Animation contents inside chunk 0x00001000
+    mode: map
+    ignore_unknown: false
+    fields:
+      - name: header
+        cardinality: required
+        source_kind: id
+        id: 0x00001001
+        payload_kind: mini_chunks
+        payload_type: AnimationHeader
+      - name: bones
+        cardinality: repeated
+        source_kind: id
+        id: 0x00001002
+        payload_kind: children
+        payload_type: BoneAnimation
+      - name: rotations
+        cardinality: optional
+        source_kind: id
+        id: 0x00001009
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: i16
+              len: 4
+      - name: translations
+        cardinality: optional
+        source_kind: id
+        id: 0x0000100a
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: i16
+              len: 3
+      - name: scales
+        cardinality: optional
+        source_kind: id
+        id: 0x0000100b
+        payload_kind: data
+        payload_type:
+          list:
+            array:
+              elem: i16
+              len: 3

@@ -1,0 +1,17 @@
+[package]
+name = "petro-chunked-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "YAML schema descriptor format, dynamic loader, and Rust codegen for Petroglyph chunked binary files"
+
+[features]
+default = ["known-formats"]
+known-formats = []
+
+[dependencies]
+anyhow.workspace = true
+petro-chunked.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
