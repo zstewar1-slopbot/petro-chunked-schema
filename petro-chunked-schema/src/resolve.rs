@@ -20,7 +20,10 @@ use crate::source::SchemaRef;
 /// [`SchemaId::ROOT`] (`SchemaId(0)`) is always the entry-point schema; imported schemas receive
 /// increasing indices `1..`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SchemaId(pub usize);
+pub struct SchemaId(
+    /// Zero-based index of the module inside [`ResolvedSchema::modules`].
+    pub usize,
+);
 
 impl SchemaId {
     /// Module ID of the root (entry-point) schema in any [`ResolvedSchema`].

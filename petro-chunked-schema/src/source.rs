@@ -12,7 +12,7 @@ use crate::error::SchemaRefError;
 /// filesystem paths.
 ///
 /// # URI Scheme Rules
-/// - `builtin:<Name>` refers to an embedded schema registered in [`crate::known_formats`] (for
+/// - `builtin:<Name>` refers to an embedded schema registered in `known_formats` (for
 ///   example `builtin:Alo`, `builtin:AloModel`, `builtin:AloParticle`, `builtin:AlaAnimation`).
 /// - `file:<Path>` explicitly forces interpretation as a local file path, allowing paths whose
 ///   names literally begin with `builtin:` or `file:` (for example `file:builtin:foo`).
