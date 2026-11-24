@@ -1,4 +1,4 @@
-//! Batch validation drawer modal scanning loose files and `.meg` archives.
+//! Batch validation centered modal scanning loose files and `.meg` archives.
 
 use freya::prelude::*;
 
@@ -7,10 +7,11 @@ use crate::ui::context::EditorState;
 use crate::ui::theme;
 use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
 
-use super::ModalFrame;
+use super::ModalDialog;
 
-/// Modal drawer running batch validation of the active [`ResolvedSchema`](petro_chunked_schema::ResolvedSchema)
-/// across all configured `GameData` directories for a given extension.
+/// Centered dialog running batch validation of the active
+/// [`ResolvedSchema`](petro_chunked_schema::ResolvedSchema) across all configured `GameData`
+/// directories for a given file extension.
 #[component]
 pub fn BatchValidateModal() -> Element {
     let mut state = use_context::<EditorState>();
@@ -18,11 +19,13 @@ pub fn BatchValidateModal() -> Element {
     let mut ext_input = use_signal(|| initial_ext);
     let mut report = use_signal(|| None::<BatchValidationReport>);
     let schema_name = state.schema.read().name.clone();
+    let dir_count = state.persisted.read().game_data_dirs.len();
 
     rsx! {
-        ModalFrame {
+        ModalDialog {
             title: format!("Batch Validate `{schema_name}` Across GameData Directories & .meg Archives"),
-            height: "305".to_owned(),
+            width: "900".to_owned(),
+            height: "560".to_owned(),
 
             rect {
                 direction: "horizontal",
@@ -55,14 +58,26 @@ pub fn BatchValidateModal() -> Element {
                         report.set(Some(rep));
                     },
                 }
+                label {
+                    font_size: "11",
+                    color: theme::TEXT_DIM,
+                    "Scanning {dir_count} configured GameData directory(s)"
+                }
             }
 
             if let Some(rep) = report.read().as_ref() {
-                label {
-                    font_size: "12",
-                    font_weight: "bold",
-                    color: if rep.failed_count == 0 { theme::ACCENT_GREEN } else { theme::ACCENT_RED },
-                    "Schema `{rep.schema_name}` on `.{rep.extension}` -> Checked: {rep.total_checked} | Passed: {rep.passed_count} | Failed: {rep.failed_count} | Skipped: {rep.skipped_count}"
+                rect {
+                    width: "fill",
+                    padding: "8 10",
+                    corner_radius: "5",
+                    background: theme::BG_SUB_CARD,
+                    border: "1 solid rgb(48, 53, 68)",
+                    label {
+                        font_size: "12",
+                        font_weight: "bold",
+                        color: if rep.failed_count == 0 { theme::ACCENT_GREEN } else { theme::ACCENT_RED },
+                        "Schema `{rep.schema_name}` on `.{rep.extension}` -> Checked: {rep.total_checked} | Passed: {rep.passed_count} | Failed: {rep.failed_count} | Skipped: {rep.skipped_count}"
+                    }
                 }
                 ScrollView {
                     width: "fill",
@@ -71,6 +86,20 @@ pub fn BatchValidateModal() -> Element {
                         width: "fill",
                         direction: "vertical",
                         spacing: "3",
+
+                        if rep.failures.is_empty() {
+                            rect {
+                                width: "fill",
+                                padding: "14",
+                                corner_radius: "4",
+                                background: theme::BG_INSET,
+                                label {
+                                    font_size: "12",
+                                    color: theme::ACCENT_GREEN,
+                                    "All {rep.passed_count} files passed validation with zero diagnostics."
+                                }
+                            }
+                        }
 
                         for fail in &rep.failures {
                             {
@@ -85,12 +114,14 @@ pub fn BatchValidateModal() -> Element {
                                 rsx! {
                                     rect {
                                         width: "fill",
-                                        padding: "4 8",
+                                        height: "30",
+                                        padding: "0 8",
                                         corner_radius: "4",
                                         background: theme::BG_INSET,
                                         direction: "horizontal",
                                         spacing: "8",
                                         cross_align: "center",
+                                        overflow: "clip",
                                         ActionButton {
                                             label: "Open in Editor".to_owned(),
                                             style: ButtonStyle::Secondary,
@@ -103,12 +134,27 @@ pub fn BatchValidateModal() -> Element {
                                         label {
                                             font_size: "12",
                                             color: theme::ACCENT_RED,
+                                            max_lines: "1",
                                             "{f_disp} ({diag_len} error(s)) — {first_diag}"
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            } else {
+                rect {
+                    width: "fill",
+                    height: "flex(1)",
+                    padding: "16",
+                    corner_radius: "5",
+                    background: theme::BG_INSET,
+                    border: "1 solid rgb(46, 51, 66)",
+                    label {
+                        font_size: "12",
+                        color: theme::TEXT_MUTED,
+                        "Enter an extension (such as `alo` or `ala`) and press `Run Validate Now` to validate every matching loose file and .meg entry in memory."
                     }
                 }
             }

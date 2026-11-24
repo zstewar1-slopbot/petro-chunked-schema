@@ -1,18 +1,19 @@
-//! Top grouped command toolbar and built-in schema / status bar.
+//! Top grouped command toolbar and session status bar.
 
 use freya::prelude::*;
-use petro_chunked_schema::known_formats;
 
 use super::context::{ActiveModal, EditorState};
 use super::theme;
-use super::widgets::{ActionButton, ButtonStyle, GroupCaption, SegmentedChip, ToolbarDivider};
+use super::widgets::{ActionButton, ButtonStyle, GroupCaption, ToolbarDivider};
 
-/// Grouped top command bar organizing file/archive asset triggers, schema management, and tools.
+/// Grouped top command bar organizing file/archive actions, schema lifecycle (`Open`, `Save`,
+/// `Save As`, `View YAML`), and validation/codegen tools.
 #[component]
 pub fn Toolbar() -> Element {
     let mut state = use_context::<EditorState>();
     let dir_count = state.persisted.read().game_data_dirs.len();
     let active_modal = *state.active_modal.read();
+    let is_dirty = *state.is_schema_dirty.read();
 
     rsx! {
         rect {
@@ -33,20 +34,20 @@ pub fn Toolbar() -> Element {
             }
 
             ToolbarDivider {}
-            GroupCaption { text: "ASSETS".to_owned() }
+            GroupCaption { text: "FILE".to_owned() }
 
             ActionButton {
                 label: "Open File / .meg...".to_owned(),
-                style: if active_modal == ActiveModal::FileBrowser {
+                style: if active_modal == ActiveModal::OpenFile {
                     ButtonStyle::Active
                 } else {
                     ButtonStyle::Secondary
                 },
-                onpress: move |_| state.toggle_modal(ActiveModal::FileBrowser),
+                onpress: move |_| state.toggle_modal(ActiveModal::OpenFile),
             }
 
             ActionButton {
-                label: format!("GameData ({dir_count})"),
+                label: format!("GameData Dirs ({dir_count})..."),
                 style: if active_modal == ActiveModal::GameDataDirs {
                     ButtonStyle::Active
                 } else {
@@ -59,19 +60,43 @@ pub fn Toolbar() -> Element {
             GroupCaption { text: "SCHEMA".to_owned() }
 
             ActionButton {
-                label: "YAML / URI...".to_owned(),
-                style: if active_modal == ActiveModal::YamlFile {
+                label: "Open Schema...".to_owned(),
+                style: if active_modal == ActiveModal::OpenSchema {
                     ButtonStyle::Active
                 } else {
                     ButtonStyle::Secondary
                 },
-                onpress: move |_| state.toggle_modal(ActiveModal::YamlFile),
+                onpress: move |_| state.toggle_modal(ActiveModal::OpenSchema),
             }
 
             ActionButton {
-                label: "+ New Blank".to_owned(),
-                style: ButtonStyle::Secondary,
-                onpress: move |_| state.start_blank_schema(),
+                label: if is_dirty { "Save*".to_owned() } else { "Save".to_owned() },
+                style: if is_dirty {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Secondary
+                },
+                onpress: move |_| state.save_schema(),
+            }
+
+            ActionButton {
+                label: "Save As...".to_owned(),
+                style: if active_modal == ActiveModal::SaveSchemaAs {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
+                onpress: move |_| state.toggle_modal(ActiveModal::SaveSchemaAs),
+            }
+
+            ActionButton {
+                label: "View YAML...".to_owned(),
+                style: if active_modal == ActiveModal::YamlPreview {
+                    ButtonStyle::Active
+                } else {
+                    ButtonStyle::Secondary
+                },
+                onpress: move |_| state.toggle_modal(ActiveModal::YamlPreview),
             }
 
             ToolbarDivider {}
@@ -100,13 +125,14 @@ pub fn Toolbar() -> Element {
     }
 }
 
-/// Second top strip combining the built-in schema radio selector with active session context.
+/// Session status strip showing the active binary file, active schema (with unsaved `*`
+/// indicator), live status feedback, and keyboard shortcut hints.
 #[component]
 pub fn StatusBar() -> Element {
-    let mut state = use_context::<EditorState>();
+    let state = use_context::<EditorState>();
     let persisted = state.persisted.read();
     let schema = state.schema.read();
-    let active_schema_name = schema.name.clone();
+    let is_dirty = *state.is_schema_dirty.read();
 
     let active_file_label = persisted
         .last_file
@@ -120,6 +146,13 @@ pub fn StatusBar() -> Element {
         .map(|r| r.to_string())
         .unwrap_or_else(|| "unsaved".to_owned());
 
+    let dirty_mark = if is_dirty { " *" } else { "" };
+    let schema_color = if is_dirty {
+        theme::ACCENT_AMBER
+    } else {
+        theme::ACCENT_BLUE
+    };
+
     rsx! {
         rect {
             width: "fill",
@@ -129,23 +162,23 @@ pub fn StatusBar() -> Element {
             border: "0 0 1 0 solid rgb(52, 57, 74)",
             direction: "horizontal",
             cross_align: "center",
-            spacing: "10",
+            spacing: "14",
 
-            GroupCaption { text: "BUILT-IN".to_owned() }
+            label {
+                font_size: "12",
+                color: theme::ACCENT_ASCII,
+                max_lines: "1",
+                "File: {active_file_label}"
+            }
 
-            rect {
-                direction: "horizontal",
-                cross_align: "center",
-                spacing: "4",
-                for &preset in known_formats::BUILTIN_NAMES {
-                    SegmentedChip {
-                        key: "{preset}",
-                        label: preset.to_owned(),
-                        selected: active_schema_name == preset,
-                        compact: Some(true),
-                        onpress: move |_| state.load_builtin(preset),
-                    }
-                }
+            ToolbarDivider {}
+
+            label {
+                font_size: "12",
+                font_weight: if is_dirty { "bold" } else { "normal" },
+                color: "{schema_color}",
+                max_lines: "1",
+                "Schema: {schema.name}{dirty_mark} ({schema_ref_label}, {schema.types.len()} types)"
             }
 
             ToolbarDivider {}
@@ -153,28 +186,19 @@ pub fn StatusBar() -> Element {
             rect {
                 width: "flex(1)",
                 overflow: "clip",
-                direction: "horizontal",
-                cross_align: "center",
-                spacing: "14",
-
-                label {
-                    font_size: "12",
-                    color: theme::ACCENT_ASCII,
-                    max_lines: "1",
-                    "File: {active_file_label}"
-                }
-                label {
-                    font_size: "12",
-                    color: theme::ACCENT_BLUE,
-                    max_lines: "1",
-                    "Schema: {schema.name} ({schema_ref_label}, {schema.types.len()} types)"
-                }
                 label {
                     font_size: "11",
                     color: theme::TEXT_MUTED,
                     max_lines: "1",
                     "{state.status_msg.read()}"
                 }
+            }
+
+            label {
+                font_size: "10",
+                color: theme::TEXT_DIM,
+                max_lines: "1",
+                "Ctrl+S Save · Ctrl+Shift+S Save As"
             }
         }
     }

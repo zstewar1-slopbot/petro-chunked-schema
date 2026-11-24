@@ -18,7 +18,6 @@
 
 #![warn(missing_docs)]
 
-#[allow(dead_code)]
 mod browser;
 mod cli;
 mod editor_ops;

@@ -1,4 +1,4 @@
-//! `petro-chunked-derive` Rust code generation drawer modal.
+//! `petro-chunked-derive` Rust code generation centered modal.
 
 use std::path::PathBuf;
 
@@ -9,9 +9,9 @@ use crate::ui::context::EditorState;
 use crate::ui::theme;
 use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
 
-use super::ModalFrame;
+use super::ModalDialog;
 
-/// Modal drawer displaying `prettyplease`-formatted `petro-chunked-derive` Rust code for the
+/// Centered dialog displaying `prettyplease`-formatted `petro-chunked-derive` Rust code for the
 /// active resolved schema with one-click export to a `.rs` file.
 #[component]
 pub fn RustCodegenModal() -> Element {
@@ -25,16 +25,18 @@ pub fn RustCodegenModal() -> Element {
     };
 
     rsx! {
-        ModalFrame {
+        ModalDialog {
             title: "Generated Rust Code (`petro-chunked-derive`)".to_owned(),
-            height: "330".to_owned(),
+            width: "940".to_owned(),
+            height: "610".to_owned(),
 
             rect {
                 direction: "horizontal",
                 spacing: "8",
                 cross_align: "center",
+                label { font_size: "12", color: theme::TEXT_MUTED, "Export path:" }
                 StyledInput {
-                    width: Some("280".to_owned()),
+                    width: Some("340".to_owned()),
                     value: save_path_input.read().clone(),
                     placeholder: Some("output.rs".to_owned()),
                     onchange: move |txt| save_path_input.set(txt),
@@ -64,9 +66,10 @@ pub fn RustCodegenModal() -> Element {
                 height: "flex(1)",
                 rect {
                     width: "fill",
-                    padding: "10",
-                    corner_radius: "4",
+                    padding: "12",
+                    corner_radius: "5",
                     background: theme::BG_INSET,
+                    border: "1 solid rgb(46, 51, 66)",
                     label {
                         font_size: "12",
                         font_family: "monospace",

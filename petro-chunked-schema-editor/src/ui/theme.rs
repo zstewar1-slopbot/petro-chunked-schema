@@ -12,10 +12,20 @@ pub const BG_STATUS: &str = "rgb(23, 25, 32)";
 pub const BG_PANE_LEFT: &str = "rgb(22, 24, 31)";
 /// Right schema editor pane background.
 pub const BG_PANE_RIGHT: &str = "rgb(23, 25, 33)";
-/// Collapsible modal drawer background.
+/// Collapsible modal drawer / overlay dialog background.
 pub const BG_MODAL: &str = "rgb(32, 35, 46)";
+/// Dimmed fullscreen backdrop behind centered overlay dialogs.
+pub const BG_MODAL_BACKDROP: &str = "rgba(8, 10, 14, 0.72)";
+/// Outer border specification for centered overlay dialogs.
+pub const BORDER_MODAL: &str = "1 solid rgb(78, 92, 122)";
 /// Section card background in right pane / inspector footer.
 pub const BG_CARD: &str = "rgb(30, 33, 44)";
+/// Collapsed ancestor card background in the right-rail schema stack.
+#[allow(dead_code)]
+pub const BG_STACK_PARENT: &str = "rgb(26, 29, 39)";
+/// Highlighted border specification for the active bottom card in the schema stack.
+#[allow(dead_code)]
+pub const BORDER_STACK_ACTIVE: &str = "1 solid rgb(92, 160, 240)";
 /// Sub-surface card background for code/YAML/legend boxes.
 pub const BG_SUB_CARD: &str = "rgb(24, 26, 34)";
 /// Deep recessed surface for hex grid and diagnostic scroll area.
@@ -24,6 +34,12 @@ pub const BG_INSET: &str = "rgb(14, 15, 20)";
 pub const BG_ROW: &str = "rgb(28, 31, 40)";
 /// Selected tree row background.
 pub const BG_ROW_SELECTED: &str = "rgb(48, 72, 110)";
+/// Hover-synchronized match highlight on left-rail chunk tree rows.
+#[allow(dead_code)]
+pub const BG_ROW_HOVER_MATCH: &str = "rgb(52, 64, 96)";
+/// Border specification for hover-synchronized match rows in the left-rail chunk tree.
+#[allow(dead_code)]
+pub const BORDER_ROW_HOVER_MATCH: &str = "1 solid rgb(120, 195, 255)";
 /// Error-highlighted tree row background.
 pub const BG_ROW_ERROR: &str = "rgb(68, 32, 36)";
 /// Cursor-selected hex byte cell background.

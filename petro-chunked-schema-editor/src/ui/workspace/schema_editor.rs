@@ -263,7 +263,7 @@ fn ContainerSettingsCard(parent_ref: ParentContainerRef) -> Element {
                                     ActionButton {
                                         label: format!("Open `{alias}` Schema"),
                                         style: ButtonStyle::Secondary,
-                                        onpress: move |_| state.load_schema_ref(src_ref.clone()),
+                                        onpress: move |_| state.request_load_schema_ref(src_ref.clone()),
                                     }
                                 }
                             }

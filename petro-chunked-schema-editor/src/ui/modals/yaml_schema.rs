@@ -1,92 +1,70 @@
-//! Schema URI / YAML load, save, and source inspection drawer modal.
-
-use std::path::PathBuf;
+//! Live YAML schema serialization preview modal.
 
 use freya::prelude::*;
-use petro_chunked_schema::source::SchemaRef;
 
-use crate::gamedata::save_schema_to_path;
-use crate::ui::context::EditorState;
+use crate::ui::context::{ActiveModal, EditorState};
 use crate::ui::theme;
-use crate::ui::widgets::{ActionButton, ButtonStyle, StyledInput};
+use crate::ui::widgets::{ActionButton, ButtonStyle};
 
-use super::ModalFrame;
+use super::ModalDialog;
 
-/// Modal drawer for loading schemas via [`SchemaRef`] (`builtin:...`, `file:...`, or path),
-/// saving the active schema to disk, and viewing the live YAML serialization.
+/// Centered dialog displaying the live YAML serialization of the active in-memory schema with
+/// quick `Save` and `Save As...` actions.
 #[component]
-pub fn YamlSchemaModal() -> Element {
+pub fn YamlPreviewModal() -> Element {
     let mut state = use_context::<EditorState>();
-    let initial_ref = use_hook(|| {
-        state
-            .persisted
-            .read()
-            .schema_ref
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "custom_schema.yaml".to_owned())
-    });
-    let mut ref_input = use_signal(|| initial_ref);
-    let yaml_text = state
-        .schema
+    let schema = state.schema.read().clone();
+    let is_dirty = *state.is_schema_dirty.read();
+    let schema_ref_label = state
+        .persisted
         .read()
+        .schema_ref
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "unsaved".to_owned());
+    let yaml_text = schema
         .to_yaml_string()
         .unwrap_or_else(|e| format!("# YAML serialization error: {e}"));
 
     rsx! {
-        ModalFrame {
-            title: "Load / Save Schema (URI `builtin:...` or YAML File Path)".to_owned(),
-            height: "310".to_owned(),
+        ModalDialog {
+            title: format!("Schema YAML — {} ({schema_ref_label})", schema.name),
+            width: "880".to_owned(),
+            height: "590".to_owned(),
 
             rect {
+                width: "fill",
                 direction: "horizontal",
-                spacing: "8",
+                main_align: "space-between",
                 cross_align: "center",
-                StyledInput {
-                    width: Some("340".to_owned()),
-                    value: ref_input.read().clone(),
-                    placeholder: Some("builtin:Alo or path/to/schema.yaml".to_owned()),
-                    onchange: move |txt| ref_input.set(txt),
+                spacing: "8",
+
+                label {
+                    font_size: "12",
+                    color: if is_dirty { theme::ACCENT_AMBER } else { theme::TEXT_MUTED },
+                    if is_dirty {
+                        "In-memory edits pending — press Ctrl+S or Save to write to disk."
+                    } else {
+                        "Live serialized YAML reflecting all in-memory schema definitions."
+                    }
                 }
-                ActionButton {
-                    label: "Load Ref / YAML".to_owned(),
-                    style: ButtonStyle::Primary,
-                    onpress: move |_| {
-                        let raw = ref_input.read().trim().to_owned();
-                        match SchemaRef::parse(&raw) {
-                            Ok(sref) => state.load_schema_ref(sref),
-                            Err(e) => state.set_status(format!("Invalid schema reference: {e}")),
-                        }
-                    },
-                }
-                ActionButton {
-                    label: "Save YAML File".to_owned(),
-                    style: ButtonStyle::Secondary,
-                    onpress: move |_| {
-                        let raw = ref_input.read().trim().to_owned();
-                        let path = match SchemaRef::parse(&raw) {
-                            Ok(SchemaRef::File(p)) => p,
-                            Ok(SchemaRef::Builtin(_)) => {
-                                state.set_status("Cannot overwrite a built-in schema; provide a file path to save.".to_owned());
-                                return;
-                            }
-                            Err(_) => PathBuf::from(raw),
-                        };
-                        let cur_s = state.schema.read().clone();
-                        match save_schema_to_path(&cur_s, &path) {
-                            Ok(()) => {
-                                let sref = SchemaRef::File(path.clone());
-                                ref_input.set(sref.to_string());
-                                {
-                                    let mut p = state.persisted.write();
-                                    p.schema_ref = Some(sref);
-                                    p.save();
-                                }
-                                state.set_status(format!("Saved schema YAML to {}", path.display()));
-                            }
-                            Err(e) => state.set_status(format!("Error saving YAML schema: {e}")),
-                        }
-                    },
+
+                rect {
+                    direction: "horizontal",
+                    spacing: "8",
+                    ActionButton {
+                        label: if is_dirty { "Save*".to_owned() } else { "Save".to_owned() },
+                        style: if is_dirty { ButtonStyle::Primary } else { ButtonStyle::Secondary },
+                        onpress: move |_| state.save_schema(),
+                    }
+                    ActionButton {
+                        label: "Save As...".to_owned(),
+                        style: ButtonStyle::Secondary,
+                        onpress: move |_| {
+                            state.pending_schema_action.set(None);
+                            state.active_modal.set(ActiveModal::SaveSchemaAs);
+                        },
+                    }
                 }
             }
 
@@ -95,9 +73,10 @@ pub fn YamlSchemaModal() -> Element {
                 height: "flex(1)",
                 rect {
                     width: "fill",
-                    padding: "10",
-                    corner_radius: "4",
+                    padding: "12",
+                    corner_radius: "5",
                     background: theme::BG_INSET,
+                    border: "1 solid rgb(46, 51, 66)",
                     label {
                         font_size: "12",
                         font_family: "monospace",

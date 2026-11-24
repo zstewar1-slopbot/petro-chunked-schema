@@ -17,6 +17,7 @@ use crate::state::FileSource;
 
 /// A file discovered in a configured `GameData` directory (either loose on disk or inside a `.meg`
 /// archive).
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredFile {
     /// Human-readable display string (`path` or `archive.meg :: entry`).
@@ -102,6 +103,7 @@ pub fn load_file_bytes(source: &FileSource) -> anyhow::Result<Vec<u8>> {
 /// Scans all configured `GameData` directories for loose files and `.meg` archive entries matching
 /// `ext_filter` (if provided) and `search_query` (case-insensitive substring), returning at most
 /// `max_results` items.
+#[cfg(test)]
 pub fn discover_files(
     game_data_dirs: &[PathBuf],
     ext_filter: Option<&str>,
