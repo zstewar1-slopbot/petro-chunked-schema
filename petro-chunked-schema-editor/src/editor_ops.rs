@@ -612,64 +612,186 @@ pub fn find_existing_mini_chunk_field<'a>(
     mc_container.fields.iter().find(|f| f.id == mc_id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalTargetKind {
+    Chunks,
+    MiniChunks,
+    ByteBlock,
+}
+
+fn make_empty_stub(kind: LocalTargetKind) -> TypeDef {
+    match kind {
+        LocalTargetKind::Chunks => TypeDef::Chunks(ChunkContainerDef {
+            description: None,
+            mode: OrderMode::Map,
+            ignore_unknown: true,
+            fields: Vec::new(),
+        }),
+        LocalTargetKind::MiniChunks => TypeDef::MiniChunks(MiniChunkContainerDef {
+            description: None,
+            mode: OrderMode::Map,
+            ignore_unknown: true,
+            fields: Vec::new(),
+        }),
+        LocalTargetKind::ByteBlock => TypeDef::ByteBlock(ByteBlockDef {
+            description: None,
+            fields: Vec::new(),
+            pad_after: None,
+        }),
+    }
+}
+
+fn extract_data_type_local_target(dt: &DataType) -> Option<(LocalTargetKind, &str)> {
+    match dt {
+        DataType::Named(type_name) if !type_name.contains("::") => {
+            Some((LocalTargetKind::ByteBlock, type_name.as_str()))
+        }
+        DataType::List(inner) | DataType::Array { elem: inner, .. } => {
+            extract_data_type_local_target(inner)
+        }
+        _ => None,
+    }
+}
+
+fn extract_payload_local_target(payload: &ChunkPayloadSpec) -> Option<(LocalTargetKind, &str)> {
+    match payload {
+        ChunkPayloadSpec::Children(type_name) if !type_name.contains("::") => {
+            Some((LocalTargetKind::Chunks, type_name.as_str()))
+        }
+        ChunkPayloadSpec::MiniChunks(type_name) if !type_name.contains("::") => {
+            Some((LocalTargetKind::MiniChunks, type_name.as_str()))
+        }
+        ChunkPayloadSpec::Data(dt) => extract_data_type_local_target(dt),
+        _ => None,
+    }
+}
+
+fn count_data_type_refs(dt: &DataType, type_name: &str) -> usize {
+    match dt {
+        DataType::Named(n) => usize::from(n == type_name),
+        DataType::Array { elem, .. } | DataType::List(elem) => count_data_type_refs(elem, type_name),
+        DataType::Tuple(elems) => elems.iter().map(|e| count_data_type_refs(e, type_name)).sum(),
+        _ => 0,
+    }
+}
+
+fn count_chunk_source_refs(source: &ChunkFieldSource, type_name: &str) -> usize {
+    match source {
+        ChunkFieldSource::Id { payload, .. } => match payload {
+            ChunkPayloadSpec::Children(t) | ChunkPayloadSpec::MiniChunks(t) => {
+                usize::from(t == type_name)
+            }
+            ChunkPayloadSpec::Data(dt) => count_data_type_refs(dt, type_name),
+            ChunkPayloadSpec::Ignore => 0,
+        },
+        ChunkFieldSource::Stream { item_type } => usize::from(item_type == type_name),
+    }
+}
+
+fn count_local_type_refs(schema: &Schema, type_name: &str) -> usize {
+    let mut total = usize::from(schema.root == type_name);
+    for typedef in schema.types.values() {
+        let delta: usize = match typedef {
+            TypeDef::Chunks(c) => c
+                .fields
+                .iter()
+                .map(|f| count_chunk_source_refs(&f.source, type_name))
+                .sum(),
+            TypeDef::ChunkStreamSeq(s) => s
+                .fields
+                .iter()
+                .map(|f| count_chunk_source_refs(&f.source, type_name))
+                .sum(),
+            TypeDef::ChunkEnum(e) => e
+                .variants
+                .iter()
+                .map(|v| count_chunk_source_refs(&v.source, type_name))
+                .sum(),
+            TypeDef::MiniChunks(m) => m
+                .fields
+                .iter()
+                .map(|f| count_data_type_refs(&f.ty, type_name))
+                .sum(),
+            TypeDef::ByteBlock(bb) => bb
+                .fields
+                .iter()
+                .map(|f| count_data_type_refs(&f.ty, type_name))
+                .sum(),
+        };
+        total += delta;
+    }
+    total
+}
+
+fn is_empty_stub_type(def: &TypeDef) -> bool {
+    match def {
+        TypeDef::Chunks(c) => c.fields.is_empty() && c.description.is_none(),
+        TypeDef::MiniChunks(m) => m.fields.is_empty() && m.description.is_none(),
+        TypeDef::ByteBlock(b) => {
+            b.fields.is_empty() && b.description.is_none() && b.pad_after.is_none()
+        }
+        TypeDef::ChunkStreamSeq(s) => s.fields.is_empty() && s.description.is_none(),
+        TypeDef::ChunkEnum(e) => e.variants.is_empty() && e.description.is_none(),
+    }
+}
+
+/// Removes unreferenced empty stub types from `schema.types` (never removing `schema.root` or any
+/// type with fields, variants, descriptions, or `pad_after`), preserving definition order.
+pub fn prune_unreferenced_empty_types(schema: &mut Schema) -> usize {
+    let mut removed = 0usize;
+    loop {
+        let to_remove: Vec<String> = schema
+            .types
+            .iter()
+            .filter(|(k, def)| {
+                k.as_str() != schema.root
+                    && is_empty_stub_type(def)
+                    && count_local_type_refs(schema, k) == 0
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        if to_remove.is_empty() {
+            break;
+        }
+        for key in to_remove {
+            if schema.types.shift_remove(&key).is_some() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 fn ensure_payload_target_type(
     schema: &mut Schema,
     after_key: Option<&str>,
     payload: &ChunkPayloadSpec,
 ) {
-    match payload {
-        ChunkPayloadSpec::Children(type_name) if !type_name.contains("::") => {
-            schema.insert_type_after(
-                after_key,
-                type_name.clone(),
-                TypeDef::Chunks(ChunkContainerDef {
-                    description: None,
-                    mode: OrderMode::Map,
-                    ignore_unknown: true,
-                    fields: Vec::new(),
-                }),
-            );
-        }
-        ChunkPayloadSpec::MiniChunks(type_name) if !type_name.contains("::") => {
-            schema.insert_type_after(
-                after_key,
-                type_name.clone(),
-                TypeDef::MiniChunks(MiniChunkContainerDef {
-                    description: None,
-                    mode: OrderMode::Map,
-                    ignore_unknown: true,
-                    fields: Vec::new(),
-                }),
-            );
-        }
-        ChunkPayloadSpec::Data(DataType::Named(type_name)) if !type_name.contains("::") => {
-            schema.insert_type_after(
-                after_key,
-                type_name.clone(),
-                TypeDef::ByteBlock(ByteBlockDef {
-                    description: None,
-                    fields: Vec::new(),
-                    pad_after: None,
-                }),
-            );
-        }
-        ChunkPayloadSpec::Data(DataType::List(inner)) => {
-            if let DataType::Named(type_name) = &**inner
-                && !type_name.contains("::")
-            {
-                schema.insert_type_after(
-                    after_key,
-                    type_name.clone(),
-                    TypeDef::ByteBlock(ByteBlockDef {
-                        description: None,
-                        fields: Vec::new(),
-                        pad_after: None,
-                    }),
-                );
-            }
-        }
-        _ => {}
+    if let Some((kind, type_name)) = extract_payload_local_target(payload) {
+        schema.insert_type_after(after_key, type_name.to_owned(), make_empty_stub(kind));
     }
+}
+
+fn try_reconcile_sole_owned_target(
+    schema: &mut Schema,
+    old_target: Option<(LocalTargetKind, String)>,
+    new_target: Option<(LocalTargetKind, String)>,
+) -> Result<(), String> {
+    let (Some((old_kind, old_name)), Some((new_kind, new_name))) = (old_target, new_target) else {
+        return Ok(());
+    };
+    if old_name == schema.root || count_local_type_refs(schema, &old_name) != 1 {
+        return Ok(());
+    }
+    if old_kind == new_kind && old_name != new_name && !schema.types.contains_key(&new_name) {
+        rename_local_type(schema, &old_name, &new_name)?;
+    } else if old_kind != new_kind
+        && old_name == new_name
+        && schema.types.get(&old_name).is_some_and(is_empty_stub_type)
+    {
+        schema.types.insert(old_name, make_empty_stub(new_kind));
+    }
+    Ok(())
 }
 
 fn resolve_editable_chunk_fields<'a>(
@@ -727,37 +849,74 @@ pub fn upsert_chunk_field(
         return Err("Field name cannot be empty".to_owned());
     }
 
-    let parent_type_name = {
+    let (old_target, parent_type_hint) = {
         let (tname, fields) = resolve_editable_chunk_fields(schema, parent_ref)?;
-        if let Some(existing) = fields.iter_mut().find(|f| {
-            matches!(
-                f.source,
-                ChunkFieldSource::Id { id, .. } if id == chunk_id
-            )
-        }) {
-            existing.name = clean_name.to_owned();
-            existing.cardinality = cardinality;
-            existing.source = ChunkFieldSource::Id {
-                id: chunk_id,
-                payload: payload.clone(),
-            };
-            existing.wire_format = wire_format;
-        } else {
-            fields.push(ChunkFieldDef {
-                name: clean_name.to_owned(),
-                description: None,
-                cardinality,
-                source: ChunkFieldSource::Id {
-                    id: chunk_id,
-                    payload: payload.clone(),
-                },
-                wire_format,
+        let prev = fields
+            .iter()
+            .find(|f| matches!(f.source, ChunkFieldSource::Id { id, .. } if id == chunk_id))
+            .and_then(|existing| match &existing.source {
+                ChunkFieldSource::Id { payload, .. } => {
+                    extract_payload_local_target(payload).map(|(k, n)| (k, n.to_owned()))
+                }
+                ChunkFieldSource::Stream { .. } => None,
             });
-        }
-        tname
+        (prev, tname)
     };
 
-    ensure_payload_target_type(schema, Some(&parent_type_name), &payload);
+    let new_target = extract_payload_local_target(&payload).map(|(k, n)| (k, n.to_owned()));
+    try_reconcile_sole_owned_target(schema, old_target, new_target)?;
+
+    let parent_type_name = if let ParentContainerRef::ChunksType { type_name } = parent_ref {
+        if schema.types.contains_key(type_name) {
+            parent_type_hint
+        } else {
+            schema.root.clone()
+        }
+    } else {
+        parent_type_hint
+    };
+
+    let (resolved_parent, fields) = {
+        let mut active_ref = parent_ref.clone();
+        if let ParentContainerRef::ChunksType { .. } = active_ref
+            && !matches!(
+                schema.types.get(&parent_type_name),
+                Some(TypeDef::Chunks(_) | TypeDef::ChunkStreamSeq(_))
+            )
+        {
+            active_ref = ParentContainerRef::Root;
+        }
+        resolve_editable_chunk_fields(schema, &active_ref)?
+    };
+
+    if let Some(existing) = fields.iter_mut().find(|f| {
+        matches!(
+            f.source,
+            ChunkFieldSource::Id { id, .. } if id == chunk_id
+        )
+    }) {
+        existing.name = clean_name.to_owned();
+        existing.cardinality = cardinality;
+        existing.source = ChunkFieldSource::Id {
+            id: chunk_id,
+            payload: payload.clone(),
+        };
+        existing.wire_format = wire_format;
+    } else {
+        fields.push(ChunkFieldDef {
+            name: clean_name.to_owned(),
+            description: None,
+            cardinality,
+            source: ChunkFieldSource::Id {
+                id: chunk_id,
+                payload: payload.clone(),
+            },
+            wire_format,
+        });
+    }
+
+    ensure_payload_target_type(schema, Some(&resolved_parent), &payload);
+    prune_unreferenced_empty_types(schema);
     Ok(())
 }
 
@@ -768,16 +927,20 @@ pub fn delete_chunk_field(
     parent_ref: &ParentContainerRef,
     chunk_id: u32,
 ) -> Result<String, String> {
-    let (_, fields) = resolve_editable_chunk_fields(schema, parent_ref)?;
-    let Some(idx) = fields.iter().position(|f| {
-        matches!(
-            f.source,
-            ChunkFieldSource::Id { id, .. } if id == chunk_id
-        )
-    }) else {
-        return Err(format!("No field found for chunk 0x{chunk_id:04X}"));
+    let removed = {
+        let (_, fields) = resolve_editable_chunk_fields(schema, parent_ref)?;
+        let Some(idx) = fields.iter().position(|f| {
+            matches!(
+                f.source,
+                ChunkFieldSource::Id { id, .. } if id == chunk_id
+            )
+        }) else {
+            return Err(format!("No field found for chunk 0x{chunk_id:04X}"));
+        };
+        fields.remove(idx).name
     };
-    Ok(fields.remove(idx).name)
+    prune_unreferenced_empty_types(schema);
+    Ok(removed)
 }
 
 /// Assigns or updates an 8-bit mini-chunk field definition in `parent_ref`.
@@ -805,6 +968,22 @@ pub fn upsert_mini_chunk_field(
         _ => return Err("Assign a `MiniChunks` container type to the parent chunk first".to_owned()),
     };
 
+    let old_target = {
+        let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get(&type_name) else {
+            return Err(format!("MiniChunks type `{type_name}` not found in schema"));
+        };
+        mc_container
+            .fields
+            .iter()
+            .find(|f| f.id == mc_id)
+            .and_then(|existing| {
+                extract_data_type_local_target(&existing.ty).map(|(k, n)| (k, n.to_owned()))
+            })
+    };
+
+    let new_target = extract_data_type_local_target(&ty).map(|(k, n)| (k, n.to_owned()));
+    try_reconcile_sole_owned_target(schema, old_target, new_target)?;
+
     let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get_mut(&type_name) else {
         return Err(format!("MiniChunks type `{type_name}` not found in schema"));
     };
@@ -825,20 +1004,15 @@ pub fn upsert_mini_chunk_field(
         });
     }
 
-    if let DataType::Named(bb_name) = &ty
-        && !bb_name.contains("::")
-    {
+    if let Some((LocalTargetKind::ByteBlock, bb_name)) = extract_data_type_local_target(&ty) {
         schema.insert_type_after(
             Some(&type_name),
-            bb_name.clone(),
-            TypeDef::ByteBlock(ByteBlockDef {
-                description: None,
-                fields: Vec::new(),
-                pad_after: None,
-            }),
+            bb_name.to_owned(),
+            make_empty_stub(LocalTargetKind::ByteBlock),
         );
     }
 
+    prune_unreferenced_empty_types(schema);
     Ok(())
 }
 
@@ -849,16 +1023,22 @@ pub fn delete_mini_chunk_field(
     parent_ref: &ParentContainerRef,
     mc_id: u8,
 ) -> Result<String, String> {
-    let ParentContainerRef::MiniChunksType { type_name } = parent_ref else {
-        return Err("Mini-chunk field does not belong to an editable local MiniChunks type".to_owned());
+    let removed = {
+        let ParentContainerRef::MiniChunksType { type_name } = parent_ref else {
+            return Err(
+                "Mini-chunk field does not belong to an editable local MiniChunks type".to_owned(),
+            );
+        };
+        let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get_mut(type_name) else {
+            return Err(format!("MiniChunks type `{type_name}` not found in schema"));
+        };
+        let Some(idx) = mc_container.fields.iter().position(|f| f.id == mc_id) else {
+            return Err(format!("No field found for mini-chunk 0x{mc_id:02X}"));
+        };
+        mc_container.fields.remove(idx).name
     };
-    let Some(TypeDef::MiniChunks(mc_container)) = schema.types.get_mut(type_name) else {
-        return Err(format!("MiniChunks type `{type_name}` not found in schema"));
-    };
-    let Some(idx) = mc_container.fields.iter().position(|f| f.id == mc_id) else {
-        return Err(format!("No field found for mini-chunk 0x{mc_id:02X}"));
-    };
-    Ok(mc_container.fields.remove(idx).name)
+    prune_unreferenced_empty_types(schema);
+    Ok(removed)
 }
 
 /// Parses a comma-, semicolon-, or whitespace-separated extension string into normalized
@@ -1361,5 +1541,155 @@ mod tests {
         rename_local_type(&mut schema, "TedRoot", "TedMapRoot").unwrap();
         assert_eq!(schema.root, "TedMapRoot");
         assert!(schema.types.contains_key("TedMapRoot"));
+    }
+
+    #[test]
+    fn test_live_typing_type_name_renames_in_place_without_orphans() {
+        let mut schema = Schema::new_empty("TedMap");
+
+        // 1. Define chunk 0x0000 with auto-generated MiniChunks("Chunk0000MiniChunks"), and populate
+        //    a field inside it.
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0000,
+            "map_info",
+            Cardinality::Required,
+            ChunkPayloadSpec::MiniChunks("Chunk0000MiniChunks".to_owned()),
+            None,
+        )
+        .unwrap();
+        upsert_mini_chunk_field(
+            &mut schema,
+            &ParentContainerRef::MiniChunksType {
+                type_name: "Chunk0000MiniChunks".to_owned(),
+            },
+            0,
+            "map_format_version",
+            Cardinality::Optional,
+            DataType::U32,
+            None,
+        )
+        .unwrap();
+
+        // 2. Simulate live keystroke-by-keystroke typing in the `Type` box: "M" .. "MapInfo".
+        for prefix in ["M", "Ma", "Map", "MapI", "MapIn", "MapInf", "MapInfo"] {
+            upsert_chunk_field(
+                &mut schema,
+                &ParentContainerRef::Root,
+                0x0000,
+                "map_info",
+                Cardinality::Required,
+                ChunkPayloadSpec::MiniChunks(prefix.to_owned()),
+                None,
+            )
+            .unwrap();
+        }
+        let keys: Vec<&str> = schema.types.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["TedMap", "MapInfo"]);
+        let Some(TypeDef::MiniChunks(mc_info)) = schema.types.get("MapInfo") else {
+            panic!("expected MapInfo mini_chunks container");
+        };
+        assert_eq!(mc_info.fields.len(), 1);
+        assert_eq!(mc_info.fields[0].name, "map_format_version");
+
+        // 3. Typing prefixes of `c_string` on a Data chunk leaves zero orphan ByteBlocks.
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0002,
+            "label",
+            Cardinality::Optional,
+            ChunkPayloadSpec::Data(DataType::RawBytes),
+            None,
+        )
+        .unwrap();
+        for prefix in ["c", "c_", "c_s", "c_strin"] {
+            upsert_chunk_field(
+                &mut schema,
+                &ParentContainerRef::Root,
+                0x0002,
+                "label",
+                Cardinality::Optional,
+                ChunkPayloadSpec::Data(DataType::Named(prefix.to_owned())),
+                None,
+            )
+            .unwrap();
+        }
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0002,
+            "label",
+            Cardinality::Optional,
+            ChunkPayloadSpec::Data(DataType::CString),
+            None,
+        )
+        .unwrap();
+        let keys_after_cstr: Vec<&str> = schema.types.keys().map(String::as_str).collect();
+        assert_eq!(keys_after_cstr, vec!["TedMap", "MapInfo"]);
+
+        // 4. Shared type protection: when two chunks reference `"MapInfo"`, changing the second
+        //    to `"MapExtra"` keeps `"MapInfo"` intact and creates `"MapExtra"`.
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0003,
+            "dup_info",
+            Cardinality::Optional,
+            ChunkPayloadSpec::MiniChunks("MapInfo".to_owned()),
+            None,
+        )
+        .unwrap();
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0003,
+            "dup_info",
+            Cardinality::Optional,
+            ChunkPayloadSpec::MiniChunks("MapExtra".to_owned()),
+            None,
+        )
+        .unwrap();
+        assert!(schema.types.contains_key("MapInfo"));
+        assert!(schema.types.contains_key("MapExtra"));
+
+        // 5. Deleting a field prunes its unreferenced empty stub, and same-name kind conversion
+        //    replaces the empty stub cleanly.
+        delete_chunk_field(&mut schema, &ParentContainerRef::Root, 0x0003).unwrap();
+        assert!(!schema.types.contains_key("MapExtra"));
+
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0004,
+            "temp",
+            Cardinality::Optional,
+            ChunkPayloadSpec::MiniChunks("TempNode".to_owned()),
+            None,
+        )
+        .unwrap();
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0004,
+            "temp",
+            Cardinality::Optional,
+            ChunkPayloadSpec::Children("TempNode".to_owned()),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(schema.types.get("TempNode"), Some(TypeDef::Chunks(_))));
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0004,
+            "temp",
+            Cardinality::Optional,
+            ChunkPayloadSpec::Data(DataType::U32),
+            None,
+        )
+        .unwrap();
+        assert!(!schema.types.contains_key("TempNode"));
     }
 }
