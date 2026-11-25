@@ -18,9 +18,10 @@ petro-chunked-schema-editor \
 # Emit formatted petro-chunked-derive Rust definitions for a schema to stdout
 petro-chunked-schema-editor --schema builtin:Alo --emit-rust
 
-# Scan a chunked file for whole-block (or + embedded) printable ASCII / ASCIIZ strings
+# Scan a chunked file for whole-block and embedded ASCIIZ strings (skipping typed binary spans)
 petro-chunked-schema-editor --schema builtin:Alo --file ./sample.alo --find-strings
-petro-chunked-schema-editor --file ./sample.alo --find-strings --include-embedded --min-string-len 4
+petro-chunked-schema-editor --file ./sample.alo --find-strings --whole-only
+petro-chunked-schema-editor --file ./sample.alo --find-strings --include-embedded-ascii --include-typed-binary --min-string-len 6
 
 # Load a custom YAML file (use file: to escape literal filenames starting with builtin: or file:)
 petro-chunked-schema-editor --schema ./custom.yaml --file ./sample.map

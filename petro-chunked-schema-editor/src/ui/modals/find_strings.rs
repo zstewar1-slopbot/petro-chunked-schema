@@ -1,4 +1,5 @@
-//! Freestanding string finder window scanning leaf chunks and mini-chunks for ASCII & ASCIIZ.
+//! Freestanding string finder window scanning leaf chunks, mini-chunks, and byte blocks
+//! for whole-block and embedded ASCII / ASCIIZ strings.
 
 use freya::prelude::*;
 use petro_chunked_schema::dynamic::{FindStringsOptions, FoundString, StringMatchKind, find_strings};
@@ -8,6 +9,13 @@ use crate::ui::theme;
 use crate::ui::widgets::{
     ButtonStyle, action_button, group_caption, segmented_chip, styled_input, toolbar_divider,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeFilter {
+    WholeAndEmbeddedZ,
+    WholeOnly,
+    WholeAndAllEmbedded,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KindFilter {
@@ -21,6 +29,35 @@ fn format_node_id(hit: &FoundString) -> String {
         format!("mc {:02X}", hit.node_id)
     } else {
         format!("0x{:04X}", hit.node_id)
+    }
+}
+
+fn format_field_label(hit: &FoundString) -> (String, Color) {
+    if let Some(sp) = &hit.span_field_path {
+        let label = match &hit.schema_field_name {
+            Some(sf)
+                if sf != sp
+                    && !sp.starts_with(&format!("{sf}."))
+                    && !sp.starts_with(&format!("{sf}[")) =>
+            {
+                format!("{sf} ({sp})")
+            }
+            _ => sp.clone(),
+        };
+        let color = if hit.is_schema_assigned {
+            theme::ACCENT_GREEN
+        } else {
+            theme::ACCENT_AMBER
+        };
+        (label, color)
+    } else if let Some(sf) = &hit.schema_field_name {
+        if hit.is_schema_assigned {
+            (sf.clone(), theme::ACCENT_GREEN)
+        } else {
+            (format!("{sf} (unmapped)"), theme::ACCENT_AMBER)
+        }
+    } else {
+        ("<unassigned>".to_owned(), theme::TEXT_DIM)
     }
 }
 
@@ -44,38 +81,48 @@ fn kind_badge_color(kind: StringMatchKind) -> Color {
         StringMatchKind::WholeAsciiz => theme::ACCENT_GREEN,
         StringMatchKind::WholeAsciizPadded => theme::ACCENT_AMBER,
         StringMatchKind::WholeAscii => theme::ACCENT_BLUE,
-        StringMatchKind::EmbeddedAsciiz | StringMatchKind::EmbeddedAscii => theme::TEXT_MUTED,
+        StringMatchKind::EmbeddedAsciiz => theme::ACCENT_ASCII,
+        StringMatchKind::EmbeddedAscii => theme::TEXT_MUTED,
     }
 }
 
-/// Freestanding window displaying whole-block and optional embedded ASCII / ASCIIZ string hits
-/// across the active binary file, with click-to-jump navigation into the main inspector window.
+/// Freestanding window displaying whole-block and embedded ASCII / ASCIIZ string hits across the
+/// active binary file, with span-aware typed-binary filtering and click-to-jump navigation.
 #[derive(PartialEq)]
 pub struct FindStringsWindow;
 
 impl Component for FindStringsWindow {
     fn render(&self) -> impl IntoElement {
         let state = EditorState::current();
-        let mut include_embedded = use_state(|| false);
+        let mut scope = use_state(|| ScopeFilter::WholeAndEmbeddedZ);
         let mut kind_filter = use_state(|| KindFilter::All);
         let mut unassigned_only = use_state(|| false);
-        let mut min_len = use_state(|| 2usize);
+        let mut skip_typed = use_state(|| true);
+        let mut min_whole_len = use_state(|| 2usize);
+        let mut min_emb_len = use_state(|| 4usize);
         let mut query = use_state(String::new);
         let mut active_hit_key = use_state(|| None::<(String, usize)>);
 
-        let cur_embedded = *include_embedded.read();
+        let cur_scope = *scope.read();
         let cur_kind = *kind_filter.read();
         let cur_unassigned = *unassigned_only.read();
-        let cur_min_len = *min_len.read();
+        let cur_skip_typed = *skip_typed.read();
+        let cur_min_whole = *min_whole_len.read();
+        let cur_min_emb = *min_emb_len.read();
         let cur_query = query.read().trim().to_ascii_lowercase();
         let cur_active = active_hit_key.read().clone();
 
         let opts = FindStringsOptions {
-            min_whole_len: cur_min_len,
-            min_embedded_len: cur_min_len,
+            min_whole_len: cur_min_whole,
+            min_embedded_len: cur_min_emb,
             include_asciiz: matches!(cur_kind, KindFilter::All | KindFilter::AsciizOnly),
             include_ascii: matches!(cur_kind, KindFilter::All | KindFilter::AsciiOnly),
-            include_embedded: cur_embedded,
+            include_embedded_asciiz: matches!(
+                cur_scope,
+                ScopeFilter::WholeAndEmbeddedZ | ScopeFilter::WholeAndAllEmbedded
+            ),
+            include_embedded_ascii: matches!(cur_scope, ScopeFilter::WholeAndAllEmbedded),
+            skip_typed_non_string_spans: cur_skip_typed,
             allow_whitespace_controls: true,
             max_results: 2000,
         };
@@ -100,7 +147,7 @@ impl Component for FindStringsWindow {
         let hit_limit_reached = total_hits == opts.max_results;
         let filtered_hits: Vec<FoundString> = all_hits
             .into_iter()
-            .filter(|hit| !cur_unassigned || hit.schema_field_name.is_none())
+            .filter(|hit| !cur_unassigned || !hit.is_schema_assigned)
             .filter(|hit| {
                 if cur_query.is_empty() {
                     return true;
@@ -111,6 +158,12 @@ impl Component for FindStringsWindow {
                     || hit.tree_path.to_ascii_lowercase().contains(&cur_query)
                     || hit
                         .schema_field_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&cur_query)
+                    || hit
+                        .span_field_path
                         .as_deref()
                         .unwrap_or("")
                         .to_ascii_lowercase()
@@ -126,17 +179,34 @@ impl Component for FindStringsWindow {
             String::new()
         };
 
-        let min_len_chips: Vec<Element> = [1usize, 2, 4, 8]
-            .into_iter()
-            .map(|len_val| {
-                segmented_chip(
-                    format!("{len_val}"),
-                    cur_min_len == len_val,
-                    true,
-                    move || min_len.set(len_val),
-                )
-            })
-            .collect();
+        let (min_len_caption, min_len_chips): (&'static str, Vec<Element>) =
+            if cur_scope == ScopeFilter::WholeOnly {
+                let chips = [1usize, 2, 4, 8]
+                    .into_iter()
+                    .map(|len_val| {
+                        segmented_chip(
+                            format!("{len_val}"),
+                            cur_min_whole == len_val,
+                            true,
+                            move || min_whole_len.set(len_val),
+                        )
+                    })
+                    .collect();
+                ("MIN LEN", chips)
+            } else {
+                let chips = [3usize, 4, 6, 8]
+                    .into_iter()
+                    .map(|len_val| {
+                        segmented_chip(
+                            format!("{len_val}"),
+                            cur_min_emb == len_val,
+                            true,
+                            move || min_emb_len.set(len_val),
+                        )
+                    })
+                    .collect();
+                ("EMB MIN", chips)
+            };
 
         let rows: Vec<Element> = filtered_hits
             .into_iter()
@@ -157,10 +227,7 @@ impl Component for FindStringsWindow {
                     format!("0x{:X} +{:X}", hit.file_offset, hit.payload_offset)
                 };
                 let len_str = format!("{}B", hit.byte_len);
-                let (field_str, field_color) = match &hit.schema_field_name {
-                    Some(name) => (name.clone(), theme::ACCENT_GREEN),
-                    None => ("<unassigned>".to_owned(), theme::TEXT_DIM),
-                };
+                let (field_str, field_color) = format_field_label(&hit);
                 let preview_str = format!("\"{}\"", escape_string_preview(&hit.text));
 
                 let jump_path = hit.tree_path.clone();
@@ -211,7 +278,7 @@ impl Component for FindStringsWindow {
                     )
                     .child(
                         label()
-                            .width(Size::px(96.0))
+                            .width(Size::px(106.0))
                             .font_size(11.0)
                             .font_family("monospace")
                             .color(theme::TEXT_DIM)
@@ -229,7 +296,7 @@ impl Component for FindStringsWindow {
                     )
                     .child(
                         label()
-                            .width(Size::px(130.0))
+                            .width(Size::px(155.0))
                             .font_size(11.0)
                             .color(field_color)
                             .max_lines(1)
@@ -274,7 +341,7 @@ impl Component for FindStringsWindow {
                     label()
                         .font_size(12.0)
                         .color(theme::TEXT_MUTED)
-                        .text("No matching ASCII / ASCIIZ strings found with the current filters. Try switching Scope to `+ Embedded` or lowering Min Len."),
+                        .text("No matching ASCII / ASCIIZ strings found with the current filters. Try lowering EMB MIN, toggling `+ Emb Raw`, or disabling `Skip Typed`."),
                 )
                 .into_element()
         } else {
@@ -345,25 +412,26 @@ impl Component for FindStringsWindow {
                     .background(theme::BG_SUB_CARD)
                     .border(theme::border_all(theme::BORDER_CARD))
                     .horizontal()
-                    .spacing(8.0)
+                    .spacing(6.0)
                     .cross_align(Alignment::Center)
                     .child(group_caption("SCOPE"))
                     .child(segmented_chip(
-                        "Whole Blocks",
-                        !cur_embedded,
+                        "Whole + Emb Z",
+                        cur_scope == ScopeFilter::WholeAndEmbeddedZ,
                         true,
-                        move || include_embedded.set(false),
+                        move || scope.set(ScopeFilter::WholeAndEmbeddedZ),
                     ))
                     .child(segmented_chip(
-                        "+ Embedded",
-                        cur_embedded,
+                        "Whole Only",
+                        cur_scope == ScopeFilter::WholeOnly,
                         true,
-                        move || {
-                            include_embedded.set(true);
-                            if *min_len.read() < 4 {
-                                min_len.set(4);
-                            }
-                        },
+                        move || scope.set(ScopeFilter::WholeOnly),
+                    ))
+                    .child(segmented_chip(
+                        "+ Emb Raw",
+                        cur_scope == ScopeFilter::WholeAndAllEmbedded,
+                        true,
+                        move || scope.set(ScopeFilter::WholeAndAllEmbedded),
                     ))
                     .child(toolbar_divider())
                     .child(group_caption("KIND"))
@@ -392,8 +460,14 @@ impl Component for FindStringsWindow {
                         true,
                         move || unassigned_only.set(!cur_unassigned),
                     ))
+                    .child(segmented_chip(
+                        "Skip Typed",
+                        cur_skip_typed,
+                        true,
+                        move || skip_typed.set(!cur_skip_typed),
+                    ))
                     .child(toolbar_divider())
-                    .child(group_caption("MIN LEN"))
+                    .child(group_caption(min_len_caption))
                     .children(min_len_chips),
             )
             .child(
@@ -447,7 +521,7 @@ impl Component for FindStringsWindow {
                     )
                     .child(
                         label()
-                            .width(Size::px(96.0))
+                            .width(Size::px(106.0))
                             .font_size(10.0)
                             .font_weight(FontWeight::BOLD)
                             .color(theme::TEXT_DIM)
@@ -465,7 +539,7 @@ impl Component for FindStringsWindow {
                     )
                     .child(
                         label()
-                            .width(Size::px(130.0))
+                            .width(Size::px(155.0))
                             .font_size(10.0)
                             .font_weight(FontWeight::BOLD)
                             .color(theme::TEXT_DIM)
@@ -487,7 +561,7 @@ impl Component for FindStringsWindow {
                     .font_size(11.0)
                     .color(theme::TEXT_DIM)
                     .max_lines(1)
-                    .text("Click any row to jump the main editor to that chunk or mini-chunk and byte offset. This window stays open and updates live."),
+                    .text("Click any row to jump the main editor to that chunk/mini-chunk and byte offset. This window stays open and updates live."),
             )
     }
 }

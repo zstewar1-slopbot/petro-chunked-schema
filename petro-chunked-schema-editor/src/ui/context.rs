@@ -70,7 +70,7 @@ impl ModalKind {
             Self::YamlPreview => (880.0, 600.0),
             Self::BatchValidate => (900.0, 580.0),
             Self::RustCodegen => (940.0, 620.0),
-            Self::FindStrings => (960.0, 620.0),
+            Self::FindStrings => (1040.0, 640.0),
         }
     }
 }

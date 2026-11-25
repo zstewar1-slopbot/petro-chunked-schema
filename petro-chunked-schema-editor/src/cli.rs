@@ -42,14 +42,22 @@ pub struct CliArgs {
     pub emit_rust: bool,
 
     /// Scan `--file` (or the previously opened file) for ASCII and NUL-terminated ASCIIZ strings,
-    /// print matches to stdout, and exit.
+    /// print matches to stdout, and exit. By default includes embedded NUL-terminated strings inside
+    /// structs/untyped blocks while skipping typed non-string schema spans.
     #[arg(long)]
     pub find_strings: bool,
 
-    /// Include embedded ASCII/ASCIIZ runs inside larger non-ASCII payloads when running
-    /// `--find-strings`.
+    /// Restrict `--find-strings` to whole-block payloads only (disables embedded struct scanning).
     #[arg(long)]
-    pub include_embedded: bool,
+    pub whole_only: bool,
+
+    /// Also include non-NUL-terminated embedded ASCII runs when running `--find-strings`.
+    #[arg(long, alias = "include-embedded")]
+    pub include_embedded_ascii: bool,
+
+    /// Also scan byte ranges covered by typed non-string schema spans when running `--find-strings`.
+    #[arg(long)]
+    pub include_typed_binary: bool,
 
     /// Override the minimum character length used by `--find-strings`.
     #[arg(long)]
@@ -103,7 +111,9 @@ pub fn run_cli() -> anyhow::Result<CliOutcome> {
             src,
             &persisted,
             &resolved,
-            args.include_embedded,
+            args.whole_only,
+            args.include_embedded_ascii,
+            args.include_typed_binary,
             args.min_string_len,
         )?;
         return Ok(CliOutcome::ExitSuccess);
@@ -131,7 +141,9 @@ fn run_headless_find_strings(
     src: &FileSource,
     persisted: &PersistedState,
     resolved: &ResolvedSchema,
-    include_embedded: bool,
+    whole_only: bool,
+    include_embedded_ascii: bool,
+    include_typed_binary: bool,
     min_string_len: Option<usize>,
 ) -> anyhow::Result<()> {
     let bytes = load_file_bytes(src)?;
@@ -139,7 +151,9 @@ fn run_headless_find_strings(
     let df = load_dynamic_file(&bytes, Some(resolved), &load_opts)?;
 
     let mut opts = FindStringsOptions {
-        include_embedded,
+        include_embedded_asciiz: !whole_only,
+        include_embedded_ascii: !whole_only && include_embedded_ascii,
+        skip_typed_non_string_spans: !include_typed_binary,
         ..FindStringsOptions::default()
     };
     if let Some(min_len) = min_string_len {
@@ -147,15 +161,23 @@ fn run_headless_find_strings(
         opts.min_embedded_len = min_len;
     }
 
+    let scope_desc = if whole_only {
+        "whole blocks only"
+    } else if include_embedded_ascii {
+        "whole blocks + embedded ASCII/ASCIIZ"
+    } else {
+        "whole blocks + embedded ASCIIZ"
+    };
+
     let hits = find_strings(&df, &opts);
     println!(
-        "Found {} string(s) in `{}` ({}):",
+        "Found {} string(s) in `{}` ({scope_desc}{}):",
         hits.len(),
         src.display_label(),
-        if include_embedded {
-            "whole blocks + embedded"
+        if include_typed_binary {
+            ", including typed binary spans"
         } else {
-            "whole blocks only"
+            ""
         }
     );
     for hit in hits {
@@ -165,7 +187,11 @@ fn run_headless_find_strings(
         } else {
             format!("0x{:04X}", hit.node_id)
         };
-        let field = hit.schema_field_name.as_deref().unwrap_or("<unassigned>");
+        let field = hit
+            .span_field_path
+            .as_deref()
+            .or(hit.schema_field_name.as_deref())
+            .unwrap_or("<unassigned>");
         let escaped: String = hit
             .text
             .chars()
@@ -179,7 +205,7 @@ fn run_headless_find_strings(
             })
             .collect();
         println!(
-            "{kind:<8} {node:<8} {:<16} 0x{:06X} (+0x{:X}, {}B) {field:<18} \"{escaped}\"",
+            "{kind:<8} {node:<8} {:<16} 0x{:06X} (+0x{:X}, {}B) {field:<20} \"{escaped}\"",
             hit.tree_path, hit.file_offset, hit.payload_offset, hit.byte_len
         );
     }
