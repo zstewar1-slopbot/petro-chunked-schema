@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use petro_chunked_schema::dynamic::{
-    DynamicChunkContent, DynamicValue, LoadOptions, inspect_bytes_at_offset, load_dynamic_file,
-    validate_bytes,
+    DynamicChunkContent, DynamicValue, FindStringsOptions, LoadOptions, StringMatchKind,
+    find_strings, inspect_bytes_at_offset, load_dynamic_file, validate_bytes,
 };
 use petro_chunked_schema::error::SchemaLoadError;
 use petro_chunked_schema::resolve::SchemaLoader;
@@ -31,7 +31,6 @@ fn make_chunk(id: u32, is_container: bool, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-#[cfg(feature = "known-formats")]
 fn make_mini_chunk(id: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + payload.len());
     out.push(id);
@@ -570,6 +569,111 @@ fn test_byte_inspector_previews() {
     let previews = inspect_bytes_at_offset(b"Root\0\x01\x00\x00\x00", 0);
     assert!(previews.iter().any(|p| p.label == "CString (ASCIIZ)"));
     assert!(previews.iter().any(|p| p.label == "u32"));
+}
+
+#[test]
+fn test_find_strings_whole_blocks_minichunks_and_embedded() {
+    let mut mc_payload = Vec::new();
+    mc_payload.extend(make_mini_chunk(0x01, b"DiffuseMap\0"));
+    mc_payload.extend(make_mini_chunk(0x02, &42u32.to_le_bytes()));
+
+    let mut mixed_payload = Vec::new();
+    mixed_payload.extend_from_slice(&1u32.to_le_bytes());
+    mixed_payload.extend_from_slice(b"ShaderFX\0");
+    mixed_payload.extend_from_slice(&[0xFF, 0xFE]);
+    mixed_payload.extend_from_slice(b"ALBEDO");
+    mixed_payload.push(0xFF);
+
+    let mut child_chunks = Vec::new();
+    child_chunks.extend(make_chunk(0x0101, false, b"Hull\0"));
+    child_chunks.extend(make_chunk(0x0102, false, b"Bone01\0\0\0\0"));
+    child_chunks.extend(make_chunk(0x0103, false, b"TAG4"));
+    // 65u32 = [0x41, 0x00, 0x00, 0x00] must NOT match as WholeAsciizPadded even with min_whole_len = 1.
+    child_chunks.extend(make_chunk(0x0104, false, &65u32.to_le_bytes()));
+    child_chunks.extend(make_chunk(0x0105, false, &mc_payload));
+    child_chunks.extend(make_chunk(0x0106, false, &mixed_payload));
+
+    let file_bytes = make_chunk(0x0100, true, &child_chunks);
+    let df = load_dynamic_file(&file_bytes, None, &LoadOptions::default()).unwrap();
+
+    // Default scan: whole-block ASCII & ASCIIZ across leaf chunks and mini-chunks.
+    let mut whole_opts = FindStringsOptions {
+        min_whole_len: 1,
+        ..FindStringsOptions::default()
+    };
+    let hits = find_strings(&df, &whole_opts);
+    assert_eq!(hits.len(), 4);
+
+    assert_eq!(hits[0].tree_path, "0/0");
+    assert_eq!(hits[0].kind, StringMatchKind::WholeAsciiz);
+    assert_eq!(hits[0].text, "Hull");
+    assert_eq!(hits[0].byte_len, 5);
+    assert!(!hits[0].is_mini_chunk);
+    assert_eq!(hits[0].node_id, 0x0101);
+    assert_eq!(hits[0].payload_offset, 0);
+
+    assert_eq!(hits[1].tree_path, "0/1");
+    assert_eq!(hits[1].kind, StringMatchKind::WholeAsciizPadded);
+    assert_eq!(hits[1].text, "Bone01");
+    assert_eq!(hits[1].byte_len, 10);
+
+    assert_eq!(hits[2].tree_path, "0/2");
+    assert_eq!(hits[2].kind, StringMatchKind::WholeAscii);
+    assert_eq!(hits[2].text, "TAG4");
+    assert_eq!(hits[2].byte_len, 4);
+
+    assert_eq!(hits[3].tree_path, "0/4/mc0");
+    assert!(hits[3].is_mini_chunk);
+    assert_eq!(hits[3].node_id, 1);
+    assert_eq!(hits[3].kind, StringMatchKind::WholeAsciiz);
+    assert_eq!(hits[3].text, "DiffuseMap");
+
+    // Kind filters: ASCIIZ only vs ASCII only.
+    whole_opts.include_ascii = false;
+    let asciiz_only = find_strings(&df, &whole_opts);
+    assert_eq!(asciiz_only.len(), 3);
+    assert!(asciiz_only.iter().all(|h| h.kind.is_nul_terminated()));
+
+    whole_opts.include_ascii = true;
+    whole_opts.include_asciiz = false;
+    let ascii_only = find_strings(&df, &whole_opts);
+    assert_eq!(ascii_only.len(), 1);
+    assert_eq!(ascii_only[0].text, "TAG4");
+
+    // Embedded scan discovers ASCIIZ and ASCII runs inside mixed_payload with exact file offsets.
+    let DynamicChunkContent::Children(children) = &df.chunks[0].content else {
+        panic!("expected root children");
+    };
+    let mixed_chunk_payload_offset = children[5].payload_offset;
+
+    let embedded_opts = FindStringsOptions {
+        include_embedded: true,
+        min_embedded_len: 4,
+        ..FindStringsOptions::default()
+    };
+    let emb_hits = find_strings(&df, &embedded_opts);
+    assert_eq!(emb_hits.len(), 6);
+
+    assert_eq!(emb_hits[4].tree_path, "0/5");
+    assert_eq!(emb_hits[4].kind, StringMatchKind::EmbeddedAsciiz);
+    assert_eq!(emb_hits[4].text, "ShaderFX");
+    assert_eq!(emb_hits[4].payload_offset, 4);
+    assert_eq!(emb_hits[4].byte_len, 9);
+    assert_eq!(emb_hits[4].file_offset, mixed_chunk_payload_offset + 4);
+
+    assert_eq!(emb_hits[5].tree_path, "0/5");
+    assert_eq!(emb_hits[5].kind, StringMatchKind::EmbeddedAscii);
+    assert_eq!(emb_hits[5].text, "ALBEDO");
+    assert_eq!(emb_hits[5].payload_offset, 15);
+    assert_eq!(emb_hits[5].byte_len, 6);
+    assert_eq!(emb_hits[5].file_offset, mixed_chunk_payload_offset + 15);
+
+    // max_results cap stops cleanly.
+    let capped_opts = FindStringsOptions {
+        max_results: 2,
+        ..embedded_opts
+    };
+    assert_eq!(find_strings(&df, &capped_opts).len(), 2);
 }
 
 #[cfg(feature = "codegen")]

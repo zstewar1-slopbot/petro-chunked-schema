@@ -137,8 +137,9 @@
 //! - [`schema`] — Core YAML AST types (`Schema`, `TypeDef`, `DataType`, `Cardinality`, `WireFormat`).
 //! - [`source`] — [`SchemaRef`] URI parsing, display formatting, and relative path resolution.
 //! - [`resolve`] — [`SchemaLoader`] import graph resolution, cycle detection, and [`ResolvedSchema`].
-//! - [`dynamic`] — Two-stage raw parser, schema evaluator, [`dynamic::ByteSpanAnnotation`], and
-//!   multi-format cursor inspector ([`dynamic::inspect_bytes_at_offset`]).
+//! - [`dynamic`] — Two-stage raw parser, schema evaluator, [`dynamic::ByteSpanAnnotation`],
+//!   multi-format cursor inspector ([`dynamic::inspect_bytes_at_offset`]), and ASCII/ASCIIZ scanner
+//!   ([`dynamic::find_strings`]).
 //! - [`error`] — Structured `thiserror` error types across loading, resolution, and codegen.
 #![cfg_attr(
     feature = "known-formats",

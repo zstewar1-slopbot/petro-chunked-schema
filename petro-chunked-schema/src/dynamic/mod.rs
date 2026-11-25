@@ -18,6 +18,7 @@ mod eval;
 mod inspector;
 mod model;
 mod parser;
+mod strings;
 
 pub use eval::decode_data_type_with_spans;
 pub use inspector::{BytePreviewEntry, inspect_bytes_at_offset};
@@ -26,6 +27,7 @@ pub use model::{
     DynamicValue, SchemaDiagnostic,
 };
 pub use parser::looks_like_mini_chunks;
+pub use strings::{FindStringsOptions, FoundString, StringMatchKind, find_strings};
 
 /// Options controlling how a binary buffer is loaded into a [`DynamicFile`].
 #[derive(Debug, Clone, PartialEq, Eq)]
