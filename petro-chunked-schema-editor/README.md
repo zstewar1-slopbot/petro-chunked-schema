@@ -127,9 +127,10 @@ Because every window reads the same global reactive state, edits applied live in
    │         │                      + file schema diagnostics (`DiagnosticsPanel`)
    │         ├── HexInspectorPane   Container direct-children table, or mini-chunk strip, span legend,
    │         │                      paginated color-coded hex grid, and live cursor byte inspector
-   │         └── SchemaEditorPane   Non-indenting vertical stack of `SchemaStackCard`s with collapsible
-   │                                ancestors, absent child switching, live auto-apply field/ByteBlock
-   │                                editors, and mouseover hover sync
+   │         └── SchemaEditorPane   Collapsible Format Metadata card (`name`, `root`, extensions,
+   │                                description) + non-indenting vertical stack of `SchemaStackCard`s
+   │                                with collapsible ancestors, absent child switching, live auto-apply
+   │                                field/ByteBlock editors, and mouseover hover sync
    └── Freestanding Modal Windows (`Platform::get().launch_window`, Escape to close)
         ├── FileBrowserWindow       Hierarchical disk + browse-into-`.meg` virtual folder browser
         ├── GameDataDirsWindow      Configured GameData dirs list + visual folder picker & auto-detect

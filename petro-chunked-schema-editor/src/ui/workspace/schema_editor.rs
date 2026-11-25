@@ -14,7 +14,8 @@ use petro_chunked_schema::schema::{
 
 use crate::editor_ops::{
     FlatTreeRow, ParentContainerRef, build_flat_tree, delete_chunk_field, delete_mini_chunk_field,
-    set_byte_block_pad_after, to_pascal_case, upsert_chunk_field, upsert_mini_chunk_field,
+    parse_file_extensions, rename_local_type, set_byte_block_pad_after, to_pascal_case,
+    update_schema_metadata, upsert_chunk_field, upsert_mini_chunk_field,
 };
 use crate::schema_nav::{
     HoveredSchemaTarget, SchemaChildItem, SchemaLevelTarget, SchemaParentEdge, SchemaStackStep,
@@ -167,8 +168,336 @@ impl Component for SchemaEditorPane {
                 ScrollView::new()
                     .width(Size::fill())
                     .height(Size::flex(1.0))
-                    .child(rect().width(Size::fill()).vertical().spacing(6.0).children(cards)),
+                    .child(
+                        rect()
+                            .width(Size::fill())
+                            .vertical()
+                            .spacing(6.0)
+                            .child(SchemaMetadataCard)
+                            .children(cards),
+                    ),
             )
+    }
+}
+
+#[derive(PartialEq)]
+struct SchemaMetadataCard;
+
+impl Component for SchemaMetadataCard {
+    fn render(&self) -> impl IntoElement {
+        let mut state = EditorState::current();
+        let mut expanded = use_state(|| false);
+        let mut synced_gen = use_state(|| None::<u64>);
+        let mut name_draft = use_state(String::new);
+        let mut root_draft = use_state(String::new);
+        let mut ext_draft = use_state(String::new);
+        let mut desc_draft = use_state(String::new);
+        let mut meta_hint = use_state(|| None::<String>);
+
+        let cur_gen = *state.schema_generation.read();
+        let schema = state.schema.read().clone();
+        if *synced_gen.peek() != Some(cur_gen) {
+            synced_gen.set(Some(cur_gen));
+            name_draft.set(schema.name.clone());
+            root_draft.set(schema.root.clone());
+            ext_draft.set(schema.file_extensions.join(", "));
+            desc_draft.set(schema.description.clone().unwrap_or_default());
+            meta_hint.set(None);
+            expanded.set(schema.name == "CustomFormat" && schema.file_extensions.is_empty());
+        }
+
+        let is_expanded = *expanded.read();
+        let toggle_glyph = if is_expanded { "[-]" } else { "[+]" };
+        let ext_summary = if schema.file_extensions.is_empty() {
+            "no ext".to_owned()
+        } else {
+            schema
+                .file_extensions
+                .iter()
+                .map(|e| format!(".{e}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let ext_summary_color = if schema.file_extensions.is_empty() {
+            theme::TEXT_DIM
+        } else {
+            theme::ACCENT_GREEN
+        };
+
+        let mut card = rect()
+            .width(Size::fill())
+            .padding(if is_expanded {
+                (8.0, 10.0)
+            } else {
+                (6.0, 10.0)
+            })
+            .corner_radius(6.0)
+            .background(theme::BG_STACK_PARENT)
+            .border(theme::border_all(theme::BORDER_CARD))
+            .vertical()
+            .spacing(7.0)
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .height(Size::px(24.0))
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(6.0)
+                    .overflow(Overflow::Clip)
+                    .on_pointer_down(move |_| expanded.set(!is_expanded))
+                    .child(
+                        label()
+                            .width(Size::px(22.0))
+                            .font_size(10.0)
+                            .font_family("monospace")
+                            .font_weight(FontWeight::BOLD)
+                            .color(theme::TEXT_MUTED)
+                            .max_lines(1)
+                            .text(toggle_glyph),
+                    )
+                    .child(
+                        rect()
+                            .padding((1.0, 5.0))
+                            .corner_radius(3.0)
+                            .background(theme::BG_INSET)
+                            .border(theme::border_all(theme::BORDER_SUBTLE))
+                            .child(
+                                label()
+                                    .font_size(10.0)
+                                    .font_weight(FontWeight::BOLD)
+                                    .color(theme::ACCENT_BLUE)
+                                    .max_lines(1)
+                                    .text("Format"),
+                            ),
+                    )
+                    .child(
+                        label()
+                            .font_size(12.0)
+                            .font_weight(FontWeight::BOLD)
+                            .color(theme::TEXT_PRIMARY)
+                            .max_lines(1)
+                            .text(schema.name.clone()),
+                    )
+                    .child(
+                        label()
+                            .font_size(10.0)
+                            .font_family("monospace")
+                            .color(ext_summary_color)
+                            .max_lines(1)
+                            .text(ext_summary),
+                    )
+                    .maybe_child((!is_expanded).then(|| {
+                        label()
+                            .font_size(10.0)
+                            .color(theme::TEXT_DIM)
+                            .max_lines(1)
+                            .text("· Edit")
+                    })),
+            );
+
+        if is_expanded {
+            let apply_meta = move || {
+                let n = name_draft.peek().clone();
+                let d = desc_draft.peek().clone();
+                let exts = parse_file_extensions(&ext_draft.peek());
+                if n.trim().is_empty() {
+                    meta_hint.set_if_modified(Some("Enter a format name to apply live.".to_owned()));
+                    return;
+                }
+                let clean_n = n.trim().to_owned();
+                let ok = state.mutate_schema(
+                    format!("Updated format metadata `{clean_n}`"),
+                    move |s, _| update_schema_metadata(s, &n, &d, exts),
+                );
+                if ok {
+                    meta_hint.set_if_modified(None);
+                    let updated_root = state.schema.peek().root.clone();
+                    if *root_draft.peek() != updated_root {
+                        root_draft.set(updated_root);
+                    }
+                } else {
+                    let status = state.status_msg.peek().clone();
+                    meta_hint.set_if_modified(Some(status));
+                }
+            };
+
+            let mut apply_name = apply_meta;
+            let mut apply_ext = apply_meta;
+            let mut apply_desc = apply_meta;
+
+            let mut apply_root = move || {
+                let next_root = root_draft.peek().trim().to_owned();
+                let cur_root = state.schema.peek().root.clone();
+                if next_root.is_empty() {
+                    meta_hint
+                        .set_if_modified(Some("Enter a root type name to apply live.".to_owned()));
+                    return;
+                }
+                if next_root == cur_root {
+                    meta_hint.set_if_modified(None);
+                    return;
+                }
+                let msg_root = next_root.clone();
+                let ok = state.mutate_schema(
+                    format!("Renamed root type `{cur_root}` -> `{msg_root}`"),
+                    move |s, _| rename_local_type(s, &cur_root, &next_root),
+                );
+                if ok {
+                    meta_hint.set_if_modified(None);
+                } else {
+                    let status = state.status_msg.peek().clone();
+                    meta_hint.set_if_modified(Some(status));
+                }
+            };
+
+            let parsed_exts = parse_file_extensions(&ext_draft.read());
+            let parsed_preview = if parsed_exts.is_empty() {
+                "Parsed: none".to_owned()
+            } else {
+                format!(
+                    "Parsed: {}",
+                    parsed_exts
+                        .iter()
+                        .map(|e| format!(".{e}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+
+            let root_control: Element = if schema.root.contains("::") {
+                label()
+                    .font_size(11.0)
+                    .font_family("monospace")
+                    .color(theme::TEXT_MUTED)
+                    .max_lines(1)
+                    .text(format!("{} (imported)", schema.root))
+                    .into()
+            } else {
+                styled_input_live(
+                    Size::px(270.0),
+                    root_draft,
+                    "RootTypeName",
+                    move |_| apply_root(),
+                )
+            };
+
+            let mut body = rect()
+                .width(Size::fill())
+                .padding(8.0)
+                .corner_radius(5.0)
+                .background(theme::BG_SUB_CARD)
+                .border(theme::border_all(theme::BORDER_SUBTLE))
+                .vertical()
+                .spacing(6.0)
+                .child(group_caption("OVERALL FORMAT DEFINITION"))
+                .child(
+                    rect()
+                        .width(Size::fill())
+                        .horizontal()
+                        .cross_align(Alignment::Center)
+                        .spacing(8.0)
+                        .child(
+                            label()
+                                .width(Size::px(74.0))
+                                .font_size(11.0)
+                                .color(theme::TEXT_MUTED)
+                                .text("Format Name"),
+                        )
+                        .child(styled_input_live(
+                            Size::px(270.0),
+                            name_draft,
+                            "e.g. TedMap, AloModel",
+                            move |_| apply_name(),
+                        )),
+                )
+                .child(
+                    rect()
+                        .width(Size::fill())
+                        .horizontal()
+                        .cross_align(Alignment::Center)
+                        .spacing(8.0)
+                        .child(
+                            label()
+                                .width(Size::px(74.0))
+                                .font_size(11.0)
+                                .color(theme::TEXT_MUTED)
+                                .text("Root Type"),
+                        )
+                        .child(root_control),
+                )
+                .child(
+                    rect()
+                        .width(Size::fill())
+                        .horizontal()
+                        .cross_align(Alignment::Center)
+                        .spacing(8.0)
+                        .child(
+                            label()
+                                .width(Size::px(74.0))
+                                .font_size(11.0)
+                                .color(theme::TEXT_MUTED)
+                                .text("Extensions"),
+                        )
+                        .child(styled_input_live(
+                            Size::px(270.0),
+                            ext_draft,
+                            "alo, ted (comma-separated)",
+                            move |_| apply_ext(),
+                        )),
+                )
+                .child(
+                    rect()
+                        .width(Size::fill())
+                        .horizontal()
+                        .spacing(8.0)
+                        .child(rect().width(Size::px(74.0)))
+                        .child(
+                            label()
+                                .font_size(10.0)
+                                .font_family("monospace")
+                                .color(if parsed_exts.is_empty() {
+                                    theme::TEXT_DIM
+                                } else {
+                                    theme::ACCENT_GREEN
+                                })
+                                .max_lines(1)
+                                .text(parsed_preview),
+                        ),
+                )
+                .child(
+                    rect()
+                        .width(Size::fill())
+                        .horizontal()
+                        .cross_align(Alignment::Center)
+                        .spacing(8.0)
+                        .child(
+                            label()
+                                .width(Size::px(74.0))
+                                .font_size(11.0)
+                                .color(theme::TEXT_MUTED)
+                                .text("Description"),
+                        )
+                        .child(styled_input_live(
+                            Size::px(270.0),
+                            desc_draft,
+                            "Human-readable format description",
+                            move |_| apply_desc(),
+                        )),
+                );
+
+            if let Some(hint) = meta_hint.read().clone() {
+                body = body.child(
+                    label()
+                        .font_size(11.0)
+                        .color(theme::ACCENT_AMBER)
+                        .text(hint),
+                );
+            }
+
+            card = card.child(body);
+        }
+
+        card
     }
 }
 

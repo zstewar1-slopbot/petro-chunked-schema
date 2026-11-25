@@ -861,6 +861,164 @@ pub fn delete_mini_chunk_field(
     Ok(mc_container.fields.remove(idx).name)
 }
 
+/// Parses a comma-, semicolon-, or whitespace-separated extension string into normalized
+/// lowercase file extensions without leading dots, deduplicated in first-seen order.
+pub fn parse_file_extensions(raw: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for tok in raw.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let cleaned = tok.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !cleaned.is_empty() && seen.insert(cleaned.clone()) {
+            out.push(cleaned);
+        }
+    }
+    out
+}
+
+/// Renames a local `TypeDef` key in `schema.types`, preserving definition order and updating
+/// `schema.root` as well as all local type references across containers, enums, mini-chunks,
+/// and byte blocks.
+pub fn rename_local_type(
+    schema: &mut Schema,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let clean_new = new_name.trim();
+    if clean_new.is_empty() {
+        return Err("Type name cannot be empty".to_owned());
+    }
+    if clean_new.contains("::") {
+        return Err("Local type name cannot contain `::`".to_owned());
+    }
+    if old_name == clean_new {
+        return Ok(());
+    }
+    if !schema.types.contains_key(old_name) {
+        return Err(format!("Local type `{old_name}` not found in schema"));
+    }
+    if schema.types.contains_key(clean_new) {
+        return Err(format!("Type `{clean_new}` already exists in schema"));
+    }
+
+    let old_types = std::mem::take(&mut schema.types);
+    for (k, v) in old_types {
+        let next_k = if k == old_name {
+            clean_new.to_owned()
+        } else {
+            k
+        };
+        schema.types.insert(next_k, v);
+    }
+
+    if schema.root == old_name {
+        schema.root = clean_new.to_owned();
+    }
+
+    for typedef in schema.types.values_mut() {
+        match typedef {
+            TypeDef::Chunks(c) => {
+                for f in &mut c.fields {
+                    rename_chunk_source_ref(&mut f.source, old_name, clean_new);
+                }
+            }
+            TypeDef::ChunkStreamSeq(s) => {
+                for f in &mut s.fields {
+                    rename_chunk_source_ref(&mut f.source, old_name, clean_new);
+                }
+            }
+            TypeDef::ChunkEnum(e) => {
+                for v in &mut e.variants {
+                    rename_chunk_source_ref(&mut v.source, old_name, clean_new);
+                }
+            }
+            TypeDef::MiniChunks(m) => {
+                for f in &mut m.fields {
+                    rename_data_type_ref(&mut f.ty, old_name, clean_new);
+                }
+            }
+            TypeDef::ByteBlock(bb) => {
+                for f in &mut bb.fields {
+                    rename_data_type_ref(&mut f.ty, old_name, clean_new);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn rename_chunk_source_ref(source: &mut ChunkFieldSource, old_name: &str, new_name: &str) {
+    match source {
+        ChunkFieldSource::Id { payload, .. } => match payload {
+            ChunkPayloadSpec::Children(t) | ChunkPayloadSpec::MiniChunks(t) => {
+                if t == old_name {
+                    *t = new_name.to_owned();
+                }
+            }
+            ChunkPayloadSpec::Data(dt) => rename_data_type_ref(dt, old_name, new_name),
+            ChunkPayloadSpec::Ignore => {}
+        },
+        ChunkFieldSource::Stream { item_type } => {
+            if item_type == old_name {
+                *item_type = new_name.to_owned();
+            }
+        }
+    }
+}
+
+fn rename_data_type_ref(dt: &mut DataType, old_name: &str, new_name: &str) {
+    match dt {
+        DataType::Named(n) => {
+            if n == old_name {
+                *n = new_name.to_owned();
+            }
+        }
+        DataType::Array { elem, .. } | DataType::List(elem) => {
+            rename_data_type_ref(elem, old_name, new_name);
+        }
+        DataType::Tuple(elems) => {
+            for e in elems {
+                rename_data_type_ref(e, old_name, new_name);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Updates top-level schema format metadata (`name`, `description`, `file_extensions`).
+///
+/// When `schema.root` still matches the previous `schema.name` (e.g. a newly created
+/// `CustomFormat` schema) and the new name does not conflict with an existing type, the root
+/// definition is co-renamed cleanly via [`rename_local_type`].
+pub fn update_schema_metadata(
+    schema: &mut Schema,
+    name: &str,
+    description: &str,
+    file_extensions: Vec<String>,
+) -> Result<(), String> {
+    let clean_name = name.trim();
+    if clean_name.is_empty() {
+        return Err("Format name cannot be empty".to_owned());
+    }
+    let old_name = schema.name.clone();
+    schema.name = clean_name.to_owned();
+    schema.description = {
+        let trimmed = description.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    };
+    schema.file_extensions = file_extensions;
+
+    if schema.root == old_name
+        && old_name != clean_name
+        && !clean_name.contains("::")
+        && !schema.types.contains_key(clean_name)
+    {
+        rename_local_type(schema, &old_name, clean_name)?;
+    }
+
+    Ok(())
+}
+
 /// Updates trailing `pad_after` on a named `TypeDef::ByteBlock` in `schema.types`.
 pub fn set_byte_block_pad_after(
     schema: &mut Schema,
@@ -1142,5 +1300,66 @@ mod tests {
         assert_eq!(child.type_label.as_deref(), Some("SkeletonHeader"));
         assert_eq!(child.size, 128);
         assert!(!child.has_error);
+    }
+
+    #[test]
+    fn test_parse_file_extensions_normalizes_and_dedups() {
+        assert_eq!(
+            parse_file_extensions(".TED, .map; ted  ALO ."),
+            vec!["ted".to_owned(), "map".to_owned(), "alo".to_owned()]
+        );
+        assert!(parse_file_extensions("  , ; . ").is_empty());
+    }
+
+    #[test]
+    fn test_update_schema_metadata_and_root_co_rename() {
+        let mut schema = Schema::new_empty("CustomFormat");
+        upsert_chunk_field(
+            &mut schema,
+            &ParentContainerRef::Root,
+            0x0001,
+            "header",
+            Cardinality::Required,
+            ChunkPayloadSpec::Children("HeaderBox".to_owned()),
+            None,
+        )
+        .unwrap();
+
+        // Starter schema where root == name co-renames root and keeps parents-before-children order.
+        update_schema_metadata(
+            &mut schema,
+            "TedMap",
+            "Terrain map",
+            parse_file_extensions(".TED, map"),
+        )
+        .unwrap();
+        assert_eq!(schema.name, "TedMap");
+        assert_eq!(schema.root, "TedMap");
+        assert_eq!(schema.description.as_deref(), Some("Terrain map"));
+        assert_eq!(schema.file_extensions, vec!["ted".to_owned(), "map".to_owned()]);
+        let keys: Vec<&str> = schema.types.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["TedMap", "HeaderBox"]);
+
+        // Schema where name != root keeps existing root name on metadata rename.
+        schema.root = "TedRoot".to_owned();
+        let old = schema.types.shift_remove("TedMap").unwrap();
+        schema.types.shift_insert(0, "TedRoot".to_owned(), old);
+        update_schema_metadata(&mut schema, "TedV2", "", vec!["ted".to_owned()]).unwrap();
+        assert_eq!(schema.name, "TedV2");
+        assert_eq!(schema.root, "TedRoot");
+        assert_eq!(schema.description, None);
+
+        // Explicit rename_local_type updates root and local references.
+        rename_local_type(&mut schema, "HeaderBox", "MapHeader").unwrap();
+        let Some(TypeDef::Chunks(root_cc)) = schema.types.get("TedRoot") else {
+            panic!("expected root container");
+        };
+        assert!(matches!(
+            &root_cc.fields[0].source,
+            ChunkFieldSource::Id { payload: ChunkPayloadSpec::Children(t), .. } if t == "MapHeader"
+        ));
+        rename_local_type(&mut schema, "TedRoot", "TedMapRoot").unwrap();
+        assert_eq!(schema.root, "TedMapRoot");
+        assert!(schema.types.contains_key("TedMapRoot"));
     }
 }

@@ -108,6 +108,8 @@ pub struct EditorState {
     pub saved_schema_yaml: State<String>,
     /// `true` when the active in-memory schema differs from [`Self::saved_schema_yaml`].
     pub is_schema_dirty: State<bool>,
+    /// Monotonic counter incremented when a different schema is loaded or started from blank.
+    pub schema_generation: State<u64>,
     /// Deferred schema replacement awaiting confirmation when [`Self::is_schema_dirty`] is `true`.
     pub pending_schema_action: State<Option<PendingSchemaAction>>,
     /// Raw bytes of the currently opened chunked binary file.
@@ -192,6 +194,7 @@ impl EditorState {
             resolved_schema: State::create_global(initial_resolved),
             saved_schema_yaml: State::create_global(baseline_yaml),
             is_schema_dirty: State::create_global(initial_dirty),
+            schema_generation: State::create_global(0),
             pending_schema_action: State::create_global(None),
             raw_file_bytes: State::create_global(initial_bytes),
             dynamic_file: State::create_global(initial_df),
@@ -457,6 +460,8 @@ impl EditorState {
                 }
                 self.saved_schema_yaml.set(yaml);
                 self.is_schema_dirty.set(false);
+                let next_gen = *self.schema_generation.peek() + 1;
+                self.schema_generation.set(next_gen);
                 self.reevaluate_loaded_bytes(&resolved);
                 let sel_path = self.selected_tree_path.read().clone();
                 let stack = match self.dynamic_file.read().as_ref() {
@@ -496,6 +501,8 @@ impl EditorState {
         }
         self.saved_schema_yaml.set(yaml);
         self.is_schema_dirty.set(false);
+        let next_gen = *self.schema_generation.peek() + 1;
+        self.schema_generation.set(next_gen);
         self.reevaluate_loaded_bytes(&resolved);
         let sel_path = self.selected_tree_path.read().clone();
         let stack = match self.dynamic_file.read().as_ref() {
