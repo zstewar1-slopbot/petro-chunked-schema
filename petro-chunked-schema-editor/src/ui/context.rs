@@ -644,7 +644,8 @@ impl EditorState {
 
     /// Updates [`Self::hovered_schema_target`] only when the value actually changes.
     pub fn set_hovered_schema_target(&mut self, target: Option<HoveredSchemaTarget>) {
-        if *self.hovered_schema_target.read() != target {
+        let changed = *self.hovered_schema_target.peek() != target;
+        if changed {
             self.hovered_schema_target.set(target);
         }
     }

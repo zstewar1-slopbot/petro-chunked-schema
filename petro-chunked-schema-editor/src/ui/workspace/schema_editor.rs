@@ -194,6 +194,45 @@ fn step_key(step: &SchemaStackStep) -> String {
     }
 }
 
+fn card_render_key(level_idx: usize, step: &SchemaStackStep) -> String {
+    if level_idx == 0 && step.incoming_edge.is_none() {
+        return "0-root".to_owned();
+    }
+    match &step.incoming_edge {
+        Some(SchemaParentEdge::ChunkField {
+            parent_module_id,
+            parent_type_name,
+            chunk_id: Some(cid),
+            ..
+        }) => format!("{level_idx}-CE:{}:{parent_type_name}:{cid}", parent_module_id.0),
+        Some(SchemaParentEdge::ChunkField {
+            parent_module_id,
+            parent_type_name,
+            chunk_id: None,
+            field_name,
+        }) => format!(
+            "{level_idx}-SE:{}:{parent_type_name}:{field_name}",
+            parent_module_id.0
+        ),
+        Some(SchemaParentEdge::MiniChunkField {
+            parent_module_id,
+            parent_type_name,
+            mc_id,
+            ..
+        }) => format!("{level_idx}-ME:{}:{parent_type_name}:{mc_id}", parent_module_id.0),
+        Some(SchemaParentEdge::EnumVariant {
+            parent_module_id,
+            parent_type_name,
+            variant_name,
+            ..
+        }) => format!(
+            "{level_idx}-EV:{}:{parent_type_name}:{variant_name}",
+            parent_module_id.0
+        ),
+        None => format!("{level_idx}-{}", step_key(step)),
+    }
+}
+
 #[derive(PartialEq)]
 struct SchemaStackCard {
     level_idx: usize,
@@ -207,7 +246,7 @@ struct SchemaStackCard {
 
 impl Component for SchemaStackCard {
     fn render_key(&self) -> DiffKey {
-        DiffKey::from(&format!("{}-{}", self.level_idx, step_key(&self.step)))
+        DiffKey::from(&card_render_key(self.level_idx, &self.step))
     }
 
     fn render(&self) -> impl IntoElement {
@@ -1152,6 +1191,13 @@ struct LiveIncomingFieldSection {
 impl Component for LiveIncomingFieldSection {
     fn render(&self) -> impl IntoElement {
         let mut state = EditorState::current();
+        let mut synced_key = use_state(String::new);
+        let mut name_draft = use_state(String::new);
+        let mut type_draft = use_state(String::new);
+        let mut card_draft = use_state(|| "required".to_owned());
+        let mut pkind_draft = use_state(|| "data".to_owned());
+        let mut wf_draft = use_state(|| None::<WireFormat>);
+        let mut draft_hint = use_state(|| None::<String>);
 
         enum EditableField {
             Chunk {
@@ -1272,14 +1318,6 @@ impl Component for LiveIncomingFieldSection {
             ),
         };
 
-        let mut synced_key = use_state(String::new);
-        let mut name_draft = use_state(String::new);
-        let mut type_draft = use_state(String::new);
-        let mut card_draft = use_state(|| "required".to_owned());
-        let mut pkind_draft = use_state(|| "data".to_owned());
-        let mut wf_draft = use_state(|| None::<WireFormat>);
-        let mut draft_hint = use_state(|| None::<String>);
-
         if *synced_key.peek() != identity_key {
             synced_key.set(identity_key);
             name_draft.set(schema_name_val);
@@ -1292,14 +1330,17 @@ impl Component for LiveIncomingFieldSection {
 
         let apply_live = {
             let parent_t = parent_type.clone();
-            move |next_name: String,
-                  next_card: String,
-                  next_pkind: String,
-                  next_ty: String,
-                  next_wf: Option<WireFormat>| {
+            move || {
+                // Read all drafts into owned locals first so no ReadRef outlives any `.set` below.
+                let next_name = name_draft.peek().clone();
+                let next_card = card_draft.peek().clone();
+                let next_pkind = pkind_draft.peek().clone();
+                let next_ty = type_draft.peek().clone();
+                let next_wf = *wf_draft.peek();
+
                 let clean_name = next_name.trim().to_owned();
                 if clean_name.is_empty() {
-                    draft_hint.set(Some("Enter a field name to apply live.".to_owned()));
+                    draft_hint.set_if_modified(Some("Enter a field name to apply live.".to_owned()));
                     return;
                 }
                 let card = key_to_cardinality(&next_card);
@@ -1308,12 +1349,14 @@ impl Component for LiveIncomingFieldSection {
                 } else {
                     None
                 };
-                wf_draft.set(norm_wf);
+                if norm_wf != next_wf {
+                    wf_draft.set(norm_wf);
+                }
 
                 if is_mini {
                     match DataType::parse_str(next_ty.trim()) {
                         Ok(dt) => {
-                            draft_hint.set(None);
+                            draft_hint.set_if_modified(None);
                             let pref = ParentContainerRef::MiniChunksType {
                                 type_name: parent_t.clone(),
                             };
@@ -1334,7 +1377,7 @@ impl Component for LiveIncomingFieldSection {
                             );
                         }
                         Err(e) => {
-                            draft_hint.set(Some(format!("Incomplete type: {e}")));
+                            draft_hint.set_if_modified(Some(format!("Incomplete type: {e}")));
                         }
                     }
                 } else {
@@ -1342,7 +1385,9 @@ impl Component for LiveIncomingFieldSection {
                         "children" => {
                             let t = next_ty.trim();
                             if t.is_empty() {
-                                draft_hint.set(Some("Enter a child container type name.".to_owned()));
+                                draft_hint.set_if_modified(Some(
+                                    "Enter a child container type name.".to_owned(),
+                                ));
                                 return;
                             }
                             ChunkPayloadSpec::Children(t.to_owned())
@@ -1350,7 +1395,9 @@ impl Component for LiveIncomingFieldSection {
                         "mini_chunks" => {
                             let t = next_ty.trim();
                             if t.is_empty() {
-                                draft_hint.set(Some("Enter a MiniChunks type name.".to_owned()));
+                                draft_hint.set_if_modified(Some(
+                                    "Enter a MiniChunks type name.".to_owned(),
+                                ));
                                 return;
                             }
                             ChunkPayloadSpec::MiniChunks(t.to_owned())
@@ -1359,12 +1406,12 @@ impl Component for LiveIncomingFieldSection {
                         _ => match DataType::parse_str(next_ty.trim()) {
                             Ok(dt) => ChunkPayloadSpec::Data(dt),
                             Err(e) => {
-                                draft_hint.set(Some(format!("Incomplete type: {e}")));
+                                draft_hint.set_if_modified(Some(format!("Incomplete type: {e}")));
                                 return;
                             }
                         },
                     };
-                    draft_hint.set(None);
+                    draft_hint.set_if_modified(None);
                     let pref = ParentContainerRef::ChunksType {
                         type_name: parent_t.clone(),
                     };
@@ -1411,13 +1458,7 @@ impl Component for LiveIncomingFieldSection {
             let mut cd = card_draft;
             segmented_chip(clabel, cur_card == ckey, true, move || {
                 cd.set(ckey.to_owned());
-                apply(
-                    name_draft.read().clone(),
-                    ckey.to_owned(),
-                    pkind_draft.read().clone(),
-                    type_draft.read().clone(),
-                    *wf_draft.read(),
-                );
+                apply();
             })
         })
         .collect();
@@ -1435,32 +1476,31 @@ impl Component for LiveIncomingFieldSection {
             let mut td = type_draft;
             segmented_chip(plabel, cur_pkind == pkey, true, move || {
                 pk.set(pkey.to_owned());
+                let cur = td.peek().clone();
+                let cur_name = name_draft.peek().clone();
                 let next_ty = match pkey {
                     "children" => {
-                        let cur = td.read().clone();
                         if cur.is_empty()
                             || DataType::parse_str(&cur)
                                 .is_ok_and(|d| !matches!(d, DataType::Named(_)))
                         {
-                            format!("{}Container", to_pascal_case(&name_draft.read()))
+                            format!("{}Container", to_pascal_case(&cur_name))
                         } else {
                             cur
                         }
                     }
                     "mini_chunks" => {
-                        let cur = td.read().clone();
                         if cur.is_empty()
                             || DataType::parse_str(&cur)
                                 .is_ok_and(|d| !matches!(d, DataType::Named(_)))
                         {
-                            format!("{}MiniChunks", to_pascal_case(&name_draft.read()))
+                            format!("{}MiniChunks", to_pascal_case(&cur_name))
                         } else {
                             cur
                         }
                     }
                     "ignore" => String::new(),
                     _ => {
-                        let cur = td.read().clone();
                         if cur.is_empty() {
                             "raw_bytes".to_owned()
                         } else {
@@ -1468,14 +1508,8 @@ impl Component for LiveIncomingFieldSection {
                         }
                     }
                 };
-                td.set(next_ty.clone());
-                apply(
-                    name_draft.read().clone(),
-                    card_draft.read().clone(),
-                    pkey.to_owned(),
-                    next_ty,
-                    *wf_draft.read(),
-                );
+                td.set(next_ty);
+                apply();
             })
         })
         .collect();
@@ -1487,13 +1521,7 @@ impl Component for LiveIncomingFieldSection {
                 let mut td = type_draft;
                 segmented_chip(preset, cur_ty.trim() == preset, true, move || {
                     td.set(preset.to_owned());
-                    apply(
-                        name_draft.read().clone(),
-                        card_draft.read().clone(),
-                        pkind_draft.read().clone(),
-                        preset.to_owned(),
-                        *wf_draft.read(),
-                    );
+                    apply();
                 })
             })
             .collect();
@@ -1506,13 +1534,7 @@ impl Component for LiveIncomingFieldSection {
                 let effective = normalize_wire_format_for_type(&cur_ty, cur_wf);
                 segmented_chip(wf_label, effective == Some(wf), true, move || {
                     wfd.set(Some(wf));
-                    apply(
-                        name_draft.read().clone(),
-                        card_draft.read().clone(),
-                        pkind_draft.read().clone(),
-                        type_draft.read().clone(),
-                        Some(wf),
-                    );
+                    apply();
                 })
             })
             .collect();
@@ -1575,15 +1597,7 @@ impl Component for LiveIncomingFieldSection {
                         Size::px(270.0),
                         name_draft,
                         "snake_case_name",
-                        move |txt| {
-                            apply_name(
-                                txt,
-                                card_draft.read().clone(),
-                                pkind_draft.read().clone(),
-                                type_draft.read().clone(),
-                                *wf_draft.read(),
-                            );
-                        },
+                        move |_| apply_name(),
                     )),
             )
             .child(
@@ -1638,15 +1652,7 @@ impl Component for LiveIncomingFieldSection {
                         Size::px(270.0),
                         type_draft,
                         "u32, c_string, Vec<f32>, MyStruct...",
-                        move |txt| {
-                            apply_type(
-                                name_draft.read().clone(),
-                                card_draft.read().clone(),
-                                pkind_draft.read().clone(),
-                                txt,
-                                *wf_draft.read(),
-                            );
-                        },
+                        move |_| apply_type(),
                     )),
             );
 
@@ -1680,12 +1686,12 @@ impl Component for LiveIncomingFieldSection {
             );
         }
 
-        if let Some(hint) = draft_hint.read().as_ref() {
+        if let Some(hint) = draft_hint.read().clone() {
             box_el = box_el.child(
                 label()
                     .font_size(11.0)
                     .color(theme::ACCENT_AMBER)
-                    .text(hint.clone()),
+                    .text(hint),
             );
         }
 
