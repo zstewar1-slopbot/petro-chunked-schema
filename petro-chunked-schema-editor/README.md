@@ -6,7 +6,7 @@ Interactive [`freya`](https://freyaui.dev/) 0.5 multi-window GUI schema editor, 
 
 ## Quick CLI Usage
 
-When passed headless flags (`--validate` or `--emit-rust`), the binary runs in CLI mode without opening a window; otherwise it updates saved launch defaults (if supplied) and starts the GUI:
+When passed headless flags (`--validate`, `--emit-rust`, or `--find-strings`), the binary runs in CLI mode without opening a window; otherwise it updates saved launch defaults (if supplied) and starts the GUI:
 
 ```bash
 # Validate every .alo file across loose GameData files and .meg archives using the unified Alo schema
@@ -18,6 +18,10 @@ petro-chunked-schema-editor \
 # Emit formatted petro-chunked-derive Rust definitions for a schema to stdout
 petro-chunked-schema-editor --schema builtin:Alo --emit-rust
 
+# Scan a chunked file for whole-block (or + embedded) printable ASCII / ASCIIZ strings
+petro-chunked-schema-editor --schema builtin:Alo --file ./sample.alo --find-strings
+petro-chunked-schema-editor --file ./sample.alo --find-strings --include-embedded --min-string-len 4
+
 # Load a custom YAML file (use file: to escape literal filenames starting with builtin: or file:)
 petro-chunked-schema-editor --schema ./custom.yaml --file ./sample.map
 petro-chunked-schema-editor --schema file:builtin:local.yaml --emit-rust
@@ -27,6 +31,7 @@ petro-chunked-schema-editor --schema file:builtin:local.yaml --emit-rust
 
 - **`Ctrl+S`**: Save the active schema to its current YAML file (or open the freestanding **Save Schema As** window if editing a built-in or unsaved schema).
 - **`Ctrl+Shift+S`**: Open the freestanding **Save Schema As** window.
+- **`Ctrl+F`**: Open the freestanding **Find Strings (ASCII / ASCIIZ)** window.
 - **`Escape`**: Close the active freestanding dialog window (canceling any pending schema replacement).
 
 ---
@@ -131,6 +136,7 @@ Because every window reads the same global reactive state, edits applied live in
         ├── SaveSchemaAsWindow      Visual directory & `.yaml` browser + filename input
         ├── ConfirmDiscardWindow    Unsaved schema edits safeguard (`Save & Continue` / `Discard` / `Cancel`)
         ├── YamlPreviewWindow       Live read-only YAML serialization viewer with `Save` / `Save As...`
+        ├── FindStringsWindow       Live ASCII / ASCIIZ string finder (`Ctrl+F`) with click-to-jump
         ├── BatchValidateWindow     Multi-file validation over GameData dirs & `.meg` archives
         └── RustCodegenWindow       Live `prettyplease`-formatted `petro-chunked-derive` Rust viewer/exporter
 ```
@@ -142,19 +148,20 @@ Because every window reads the same global reactive state, edits applied live in
 | Path | Responsibility |
 |---|---|
 | [`src/main.rs`](./src/main.rs) | Crate entrypoint routing between CLI mode and Freya 0.5 multi-window launch. |
-| [`src/cli.rs`](./src/cli.rs) | `clap` CLI flags (`--schema`, `--file`, `--game-data`, `--validate`, `--emit-rust`) and headless runners. |
+| [`src/cli.rs`](./src/cli.rs) | `clap` CLI flags (`--schema`, `--file`, `--game-data`, `--validate`, `--emit-rust`, `--find-strings`) and headless runners. |
 | [`src/state.rs`](./src/state.rs) | Session persistence (`PersistedState`) via `directories::ProjectDirs`, `FileSource` (`Disk` / `MegEntry`), per-file plain-data overrides. |
 | [`src/gamedata.rs`](./src/gamedata.rs) | In-memory `.meg` & disk byte loading, `SchemaRef` loading/saving, EAW/FoC auto-detection, and `run_batch_validation`. |
 | [`src/browser.rs`](./src/browser.rs) | Virtual filesystem & browse-into-`.meg` navigation (`BrowseLocation`, `list_location`, breadcrumbs, quick places). |
 | [`src/editor_ops.rs`](./src/editor_ops.rs) | Pure tree flattening (`FlatTreeRow`), container child overview (`ChildSummaryRow`), node resolution, and schema mutation helpers. |
 | [`src/schema_nav.rs`](./src/schema_nav.rs) | Schema-stack ancestor resolution (`SchemaStackStep`), absent-definition enumeration (`list_level_children`), and hover matching (`matches_hover_target`). |
-| [`src/ui/mod.rs`](./src/ui/mod.rs) | Multi-window `launch_editor` setup, global `Ctrl+S` / `Ctrl+Shift+S` handling, and main window shell. |
+| [`src/ui/mod.rs`](./src/ui/mod.rs) | Multi-window `launch_editor` setup, global `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+F` handling, and main window shell. |
 | [`src/ui/theme.rs`](./src/ui/theme.rs) | Strongly-typed Freya 0.5 `Color` tokens, `Border` helpers, and byte-span color palette. |
 | [`src/ui/widgets.rs`](./src/ui/widgets.rs) | Shared styled primitives (`action_button`, `segmented_chip`, `styled_input`, `styled_input_live`, `toolbar_divider`, `group_caption`). |
 | [`src/ui/context.rs`](./src/ui/context.rs) | Cross-window global `EditorState`, freestanding window registry (`ModalKind`), dirty tracking, and domain actions. |
 | [`src/ui/toolbar.rs`](./src/ui/toolbar.rs) | Grouped `FILE` / `SCHEMA` / `TOOLS` command bar and session status bar. |
 | [`src/ui/modals/mod.rs`](./src/ui/modals/mod.rs) | Freestanding window root dispatcher (`modal_window_root`), `Escape` close hook, shared `browser_nav_bar`, and `quick_places_sidebar`. |
 | [`src/ui/modals/file_browser.rs`](./src/ui/modals/file_browser.rs) | `FileBrowserWindow` for browsing disk folders and stepping inside `.meg` archives. |
+| [`src/ui/modals/find_strings.rs`](./src/ui/modals/find_strings.rs) | `FindStringsWindow` scanning leaf chunks and mini-chunks for ASCII/ASCIIZ strings with jump navigation. |
 | [`src/ui/modals/gamedata_dirs.rs`](./src/ui/modals/gamedata_dirs.rs) | `GameDataDirsWindow` with configured dirs list and visual folder picker. |
 | [`src/ui/modals/open_schema.rs`](./src/ui/modals/open_schema.rs) | `OpenSchemaWindow` unifying built-in formats, blank schema creation, and YAML browsing. |
 | [`src/ui/modals/save_schema_as.rs`](./src/ui/modals/save_schema_as.rs) | `SaveSchemaAsWindow` for choosing destination YAML files. |

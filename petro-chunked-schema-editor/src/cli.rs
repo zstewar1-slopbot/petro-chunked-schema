@@ -1,13 +1,15 @@
-//! Command-line argument parsing and headless execution modes (`--validate`, `--emit-rust`).
+//! Command-line argument parsing and headless execution modes (`--validate`, `--emit-rust`,
+//! and `--find-strings`).
 
 use std::path::PathBuf;
 
 use clap::Parser;
 use petro_chunked_schema::codegen::generate_rust_code;
+use petro_chunked_schema::dynamic::{FindStringsOptions, LoadOptions, find_strings, load_dynamic_file};
 use petro_chunked_schema::resolve::ResolvedSchema;
 use petro_chunked_schema::source::SchemaRef;
 
-use crate::gamedata::{load_schema_from_ref, run_batch_validation};
+use crate::gamedata::{load_file_bytes, load_schema_from_ref, run_batch_validation};
 use crate::state::{FileSource, PersistedState};
 
 /// Command-line arguments for `petro-chunked-schema-editor`.
@@ -38,6 +40,20 @@ pub struct CliArgs {
     /// Print the generated `petro-chunked-derive` Rust code for the active schema to stdout and exit.
     #[arg(long)]
     pub emit_rust: bool,
+
+    /// Scan `--file` (or the previously opened file) for ASCII and NUL-terminated ASCIIZ strings,
+    /// print matches to stdout, and exit.
+    #[arg(long)]
+    pub find_strings: bool,
+
+    /// Include embedded ASCII/ASCIIZ runs inside larger non-ASCII payloads when running
+    /// `--find-strings`.
+    #[arg(long)]
+    pub include_embedded: bool,
+
+    /// Override the minimum character length used by `--find-strings`.
+    #[arg(long)]
+    pub min_string_len: Option<usize>,
 }
 
 /// Result of processing CLI flags before launching the GUI.
@@ -79,6 +95,20 @@ pub fn run_cli() -> anyhow::Result<CliOutcome> {
         return Ok(CliOutcome::ExitSuccess);
     }
 
+    if args.find_strings {
+        let Some(src) = persisted.last_file.as_ref() else {
+            anyhow::bail!("`--find-strings` requires `--file <path>` (or a previously opened file)");
+        };
+        run_headless_find_strings(
+            src,
+            &persisted,
+            &resolved,
+            args.include_embedded,
+            args.min_string_len,
+        )?;
+        return Ok(CliOutcome::ExitSuccess);
+    }
+
     if let Some(ext) = &args.validate {
         let failed = run_headless_validate(&resolved, &persisted.game_data_dirs, ext);
         return Ok(if failed {
@@ -94,6 +124,65 @@ pub fn run_cli() -> anyhow::Result<CliOutcome> {
 fn run_emit_rust(resolved: &ResolvedSchema) -> anyhow::Result<()> {
     let code = generate_rust_code(resolved)?;
     println!("{code}");
+    Ok(())
+}
+
+fn run_headless_find_strings(
+    src: &FileSource,
+    persisted: &PersistedState,
+    resolved: &ResolvedSchema,
+    include_embedded: bool,
+    min_string_len: Option<usize>,
+) -> anyhow::Result<()> {
+    let bytes = load_file_bytes(src)?;
+    let load_opts = LoadOptions::for_ui(persisted.forced_plain_paths_for(Some(src)));
+    let df = load_dynamic_file(&bytes, Some(resolved), &load_opts)?;
+
+    let mut opts = FindStringsOptions {
+        include_embedded,
+        ..FindStringsOptions::default()
+    };
+    if let Some(min_len) = min_string_len {
+        opts.min_whole_len = min_len;
+        opts.min_embedded_len = min_len;
+    }
+
+    let hits = find_strings(&df, &opts);
+    println!(
+        "Found {} string(s) in `{}` ({}):",
+        hits.len(),
+        src.display_label(),
+        if include_embedded {
+            "whole blocks + embedded"
+        } else {
+            "whole blocks only"
+        }
+    );
+    for hit in hits {
+        let kind = hit.kind.short_label();
+        let node = if hit.is_mini_chunk {
+            format!("mc {:02X}", hit.node_id)
+        } else {
+            format!("0x{:04X}", hit.node_id)
+        };
+        let field = hit.schema_field_name.as_deref().unwrap_or("<unassigned>");
+        let escaped: String = hit
+            .text
+            .chars()
+            .flat_map(|c| match c {
+                '\t' => "\\t".chars().collect::<Vec<_>>(),
+                '\r' => "\\r".chars().collect(),
+                '\n' => "\\n".chars().collect(),
+                '\\' => "\\\\".chars().collect(),
+                '"' => "\\\"".chars().collect(),
+                other => vec![other],
+            })
+            .collect();
+        println!(
+            "{kind:<8} {node:<8} {:<16} 0x{:06X} (+0x{:X}, {}B) {field:<18} \"{escaped}\"",
+            hit.tree_path, hit.file_offset, hit.payload_offset, hit.byte_len
+        );
+    }
     Ok(())
 }
 

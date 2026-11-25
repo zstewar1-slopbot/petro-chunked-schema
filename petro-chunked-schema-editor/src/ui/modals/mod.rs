@@ -1,10 +1,12 @@
 //! Freestanding Freya 0.5 modal windows for browsing disk & `.meg` files, configuring `GameData`
 //! directories, opening/saving YAML & built-in schemas with unsaved-changes safeguards,
-//! previewing live YAML, running batch validation, and emitting `petro-chunked-derive` Rust code.
+//! previewing live YAML, searching ASCII/ASCIIZ strings, running batch validation, and emitting
+//! `petro-chunked-derive` Rust code.
 
 mod batch_validate;
 mod confirm_discard;
 mod file_browser;
+mod find_strings;
 mod gamedata_dirs;
 mod open_schema;
 mod rust_codegen;
@@ -22,6 +24,7 @@ use super::widgets::{ButtonStyle, action_button, group_caption};
 use batch_validate::BatchValidateWindow;
 use confirm_discard::ConfirmDiscardWindow;
 use file_browser::FileBrowserWindow;
+use find_strings::FindStringsWindow;
 use gamedata_dirs::GameDataDirsWindow;
 use open_schema::OpenSchemaWindow;
 use rust_codegen::RustCodegenWindow;
@@ -43,6 +46,7 @@ pub fn modal_window_root(kind: ModalKind) -> impl IntoElement {
         ModalKind::YamlPreview => YamlPreviewWindow.into(),
         ModalKind::BatchValidate => BatchValidateWindow.into(),
         ModalKind::RustCodegen => RustCodegenWindow.into(),
+        ModalKind::FindStrings => FindStringsWindow.into(),
     };
 
     rect()

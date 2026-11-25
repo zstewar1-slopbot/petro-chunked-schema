@@ -49,15 +49,16 @@ fn main_window_app() -> impl IntoElement {
         .on_global_key_down(move |e: Event<KeyboardEventData>| {
             let ctrl = e.modifiers.contains(Modifiers::CONTROL);
             let shift = e.modifiers.contains(Modifiers::SHIFT);
-            if ctrl
-                && let Key::Character(ch) = &e.key
-                && ch.eq_ignore_ascii_case("s")
-            {
-                if shift {
-                    state.pending_schema_action.set(None);
-                    state.open_modal(ModalKind::SaveSchemaAs);
-                } else {
-                    state.save_schema();
+            if ctrl && let Key::Character(ch) = &e.key {
+                if ch.eq_ignore_ascii_case("s") {
+                    if shift {
+                        state.pending_schema_action.set(None);
+                        state.open_modal(ModalKind::SaveSchemaAs);
+                    } else {
+                        state.save_schema();
+                    }
+                } else if ch.eq_ignore_ascii_case("f") {
+                    state.open_modal(ModalKind::FindStrings);
                 }
             }
         })

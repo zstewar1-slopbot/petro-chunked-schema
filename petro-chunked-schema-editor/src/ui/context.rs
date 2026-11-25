@@ -39,6 +39,8 @@ pub enum ModalKind {
     BatchValidate,
     /// Live `petro-chunked-derive` Rust code generator & `.rs` exporter window.
     RustCodegen,
+    /// Interactive ASCII and NUL-terminated ASCIIZ string finder window.
+    FindStrings,
 }
 
 impl ModalKind {
@@ -53,6 +55,7 @@ impl ModalKind {
             Self::YamlPreview => "Live Schema YAML",
             Self::BatchValidate => "Batch Validate Across GameData & .meg Archives",
             Self::RustCodegen => "Generated Rust Code (petro-chunked-derive)",
+            Self::FindStrings => "Find Strings (ASCII / ASCIIZ)",
         }
     }
 
@@ -67,6 +70,7 @@ impl ModalKind {
             Self::YamlPreview => (880.0, 600.0),
             Self::BatchValidate => (900.0, 580.0),
             Self::RustCodegen => (940.0, 620.0),
+            Self::FindStrings => (960.0, 620.0),
         }
     }
 }
@@ -649,6 +653,22 @@ impl EditorState {
     pub fn jump_to_byte(&mut self, offset: usize) {
         self.selected_byte_offset.set(offset);
         self.hex_page.set(offset / 512);
+    }
+
+    /// Expands ancestor nodes in the left tree, selects `tree_path`, and positions the hex cursor
+    /// and pagination page on payload byte `payload_offset`.
+    pub fn select_node_at_offset(&mut self, tree_path: String, payload_offset: usize) {
+        {
+            let mut collapsed = self.collapsed_paths.write();
+            let mut prefix_end = 0;
+            while let Some(slash) = tree_path[prefix_end..].find('/') {
+                let end = prefix_end + slash;
+                collapsed.remove(&tree_path[..end]);
+                prefix_end = end + 1;
+            }
+        }
+        self.select_node(tree_path);
+        self.jump_to_byte(payload_offset);
     }
 
     /// Collapses or expands a tree node by `tree_path`.

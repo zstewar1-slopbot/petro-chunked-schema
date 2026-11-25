@@ -91,6 +91,12 @@ impl Component for Toolbar {
             .child(toolbar_divider())
             .child(group_caption("TOOLS"))
             .child(action_button(
+                "Find Strings...",
+                btn_style(ModalKind::FindStrings),
+                false,
+                move || state.open_modal(ModalKind::FindStrings),
+            ))
+            .child(action_button(
                 "Validate All...",
                 btn_style(ModalKind::BatchValidate),
                 false,
@@ -188,7 +194,7 @@ impl Component for StatusBar {
                     .font_size(10.0)
                     .color(theme::TEXT_DIM)
                     .max_lines(1)
-                    .text("Ctrl+S Save · Ctrl+Shift+S Save As"),
+                    .text("Ctrl+S Save · Ctrl+Shift+S Save As · Ctrl+F Find Strings"),
             )
     }
 }
