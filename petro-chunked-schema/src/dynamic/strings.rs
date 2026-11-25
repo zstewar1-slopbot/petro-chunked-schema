@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::model::{DynamicChunk, DynamicChunkContent, DynamicFile};
+use super::model::{ByteSpanAnnotation, DynamicChunk, DynamicChunkContent, DynamicFile};
 
 /// Classification of an ASCII or ASCIIZ match discovered by [`find_strings`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -60,8 +60,16 @@ pub struct FindStringsOptions {
     pub include_asciiz: bool,
     /// Include non-NUL-terminated ASCII matches (`WholeAscii`, `EmbeddedAscii`).
     pub include_ascii: bool,
-    /// When `true`, also scan inside non-all-ASCII leaf payloads for embedded ASCII/ASCIIZ runs.
-    pub include_embedded: bool,
+    /// When `true` (default), scan inside non-all-ASCII leaf payloads for NUL-terminated
+    /// printable ASCII runs (`EmbeddedAsciiz`).
+    pub include_embedded_asciiz: bool,
+    /// When `true`, also scan inside non-all-ASCII leaf payloads for non-NUL-terminated ASCII runs
+    /// (`EmbeddedAscii`).
+    pub include_embedded_ascii: bool,
+    /// When `true` (default), skip byte ranges already covered by non-padding, non-`RawBytes`,
+    /// non-string (`CString`/`Path`) schema spans so numeric buffers (e.g. vertex or matrix arrays)
+    /// and preceding `f32`/`u32` fields do not produce false-positive string matches.
+    pub skip_typed_non_string_spans: bool,
     /// Allow `\t`, `\n`, and `\r` control whitespace alongside printable ASCII (`0x20..=0x7E`).
     pub allow_whitespace_controls: bool,
     /// Maximum number of results returned (`0` disables the cap).
@@ -75,7 +83,9 @@ impl Default for FindStringsOptions {
             min_embedded_len: 4,
             include_asciiz: true,
             include_ascii: true,
-            include_embedded: false,
+            include_embedded_asciiz: true,
+            include_embedded_ascii: false,
+            skip_typed_non_string_spans: true,
             allow_whitespace_controls: true,
             max_results: 2000,
         }
@@ -95,6 +105,13 @@ pub struct FoundString {
     pub schema_field_name: Option<String>,
     /// Schema type or container label matched to this node, if any.
     pub schema_type_label: Option<String>,
+    /// Field path of the [`ByteSpanAnnotation`] covering `payload_offset` (e.g. `"name"`,
+    /// `"header.texture"`, `"TestStruct.<pad_after>"`), if any.
+    pub span_field_path: Option<String>,
+    /// `true` if this string is covered by an assigned non-padding, non-`RawBytes` schema span
+    /// (or node-level schema assignment when no spans were recorded). Strings inside `<pad_after>`,
+    /// `RawBytes`, or unmapped tail bytes report `false`.
+    pub is_schema_assigned: bool,
     /// Byte offset relative to the chunk or mini-chunk payload buffer (`0` for whole-block matches).
     pub payload_offset: usize,
     /// Absolute byte offset in the file (`node.payload_offset + payload_offset`).
@@ -141,10 +158,12 @@ fn scan_chunk_list(
                         schema_type_label: mc.schema_type_label.as_deref(),
                         base_file_offset: mc.payload_offset,
                     };
-                    scan_payload(&meta, &mc.raw_bytes, options, out);
+                    scan_payload(&meta, &mc.raw_bytes, &mc.spans, options, out);
                 }
             }
-            DynamicChunkContent::Data { raw_bytes, .. } => {
+            DynamicChunkContent::Data {
+                raw_bytes, spans, ..
+            } => {
                 let meta = NodeMeta {
                     tree_path: &chunk.tree_path,
                     is_mini_chunk: false,
@@ -153,7 +172,7 @@ fn scan_chunk_list(
                     schema_type_label: chunk.schema_type_name.as_deref(),
                     base_file_offset: chunk.payload_offset,
                 };
-                scan_payload(&meta, raw_bytes, options, out);
+                scan_payload(&meta, raw_bytes, spans, options, out);
             }
         }
     }
@@ -175,6 +194,8 @@ impl NodeMeta<'_> {
         byte_len: usize,
         kind: StringMatchKind,
         text: &str,
+        span_field_path: Option<String>,
+        is_schema_assigned: bool,
     ) -> FoundString {
         FoundString {
             tree_path: self.tree_path.to_owned(),
@@ -182,6 +203,8 @@ impl NodeMeta<'_> {
             node_id: self.node_id,
             schema_field_name: self.schema_field_name.map(str::to_owned),
             schema_type_label: self.schema_type_label.map(str::to_owned),
+            span_field_path,
+            is_schema_assigned,
             payload_offset,
             file_offset: self.base_file_offset + payload_offset,
             byte_len,
@@ -191,9 +214,59 @@ impl NodeMeta<'_> {
     }
 }
 
+fn is_typed_non_string_span(span: &ByteSpanAnnotation) -> bool {
+    !span.is_padding && !matches!(span.type_label.as_str(), "RawBytes" | "CString" | "Path")
+}
+
+fn build_skip_ranges(spans: &[ByteSpanAnnotation], payload_len: usize) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = spans
+        .iter()
+        .filter(|span| is_typed_non_string_span(span))
+        .filter_map(|span| {
+            let start = span.start.min(payload_len);
+            let end = span.end.min(payload_len);
+            (start < end).then_some((start, end))
+        })
+        .collect();
+    ranges.sort_unstable_by_key(|&(start, end)| (start, end));
+
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    merged
+}
+
+fn resolve_span_assignment(
+    spans: &[ByteSpanAnnotation],
+    schema_field_name: Option<&str>,
+    payload_offset: usize,
+) -> (Option<String>, bool) {
+    if spans.is_empty() {
+        return (None, schema_field_name.is_some());
+    }
+    if let Some(span) = spans
+        .iter()
+        .find(|s| s.start <= payload_offset && payload_offset < s.end)
+    {
+        let path = (!span.field_path.is_empty()).then(|| span.field_path.clone());
+        let assigned = !span.is_padding && span.type_label != "RawBytes";
+        (path, assigned)
+    } else {
+        (None, false)
+    }
+}
+
 fn scan_payload(
     meta: &NodeMeta<'_>,
     bytes: &[u8],
+    spans: &[ByteSpanAnnotation],
     options: &FindStringsOptions,
     out: &mut Vec<FoundString>,
 ) {
@@ -201,51 +274,106 @@ fn scan_payload(
         return;
     }
 
+    let skip_ranges = if options.skip_typed_non_string_spans {
+        build_skip_ranges(spans, bytes.len())
+    } else {
+        Vec::new()
+    };
+    if skip_ranges.as_slice() == [(0, bytes.len())] {
+        return;
+    }
+
     if let Some((kind, text)) = classify_whole_block(bytes, options) {
         if kind_matches_filter(kind, options) {
-            out.push(meta.to_found(0, bytes.len(), kind, text));
+            let (span_field_path, is_schema_assigned) =
+                resolve_span_assignment(spans, meta.schema_field_name, 0);
+            out.push(meta.to_found(
+                0,
+                bytes.len(),
+                kind,
+                text,
+                span_field_path,
+                is_schema_assigned,
+            ));
         }
         return;
     }
 
-    if !options.include_embedded {
+    if !options.include_embedded_asciiz && !options.include_embedded_ascii {
         return;
     }
 
     let min_emb_len = options.min_embedded_len.max(1);
-    let mut i = 0;
+    let mut i = 0usize;
+    let mut skip_idx = 0usize;
     while i < bytes.len() {
         if options.max_results > 0 && out.len() >= options.max_results {
             return;
         }
-        if !is_ascii_text_byte(bytes[i], options.allow_whitespace_controls) {
-            i += 1;
+        while skip_idx < skip_ranges.len() && skip_ranges[skip_idx].1 <= i {
+            skip_idx += 1;
+        }
+        if skip_idx < skip_ranges.len() && skip_ranges[skip_idx].0 <= i {
+            i = skip_ranges[skip_idx].1;
+            skip_idx += 1;
             continue;
         }
-        let start = i;
-        while i < bytes.len() && is_ascii_text_byte(bytes[i], options.allow_whitespace_controls) {
-            i += 1;
-        }
-        let end = i;
-        let run = &bytes[start..end];
-        let is_z = bytes.get(end) == Some(&0);
+        let limit = skip_ranges
+            .get(skip_idx)
+            .map_or(bytes.len(), |r| r.0)
+            .min(bytes.len());
 
-        if run.len() >= min_emb_len
-            && has_visible_printable(run)
-            && let Ok(text) = std::str::from_utf8(run)
-        {
-            let (kind, byte_len) = if is_z {
-                (StringMatchKind::EmbeddedAsciiz, run.len() + 1)
-            } else {
-                (StringMatchKind::EmbeddedAscii, run.len())
-            };
-            if kind_matches_filter(kind, options) {
-                out.push(meta.to_found(start, byte_len, kind, text));
+        while i < limit {
+            if options.max_results > 0 && out.len() >= options.max_results {
+                return;
             }
-        }
+            if !is_ascii_text_byte(bytes[i], options.allow_whitespace_controls) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < limit && is_ascii_text_byte(bytes[i], options.allow_whitespace_controls) {
+                i += 1;
+            }
+            let end = i;
+            let run = &bytes[start..end];
+            // Never treat byte 0 of a subsequent typed span at `limit` as a NUL terminator.
+            let is_z = end < limit && bytes[end] == 0;
 
-        if is_z {
-            i += 1;
+            if run.len() >= min_emb_len
+                && has_visible_printable(run)
+                && let Ok(text) = std::str::from_utf8(run)
+            {
+                let (kind, byte_len, allowed) = if is_z {
+                    (
+                        StringMatchKind::EmbeddedAsciiz,
+                        run.len() + 1,
+                        options.include_embedded_asciiz && options.include_asciiz,
+                    )
+                } else {
+                    (
+                        StringMatchKind::EmbeddedAscii,
+                        run.len(),
+                        options.include_embedded_ascii && options.include_ascii,
+                    )
+                };
+                if allowed {
+                    let (span_field_path, is_schema_assigned) =
+                        resolve_span_assignment(spans, meta.schema_field_name, start);
+                    out.push(meta.to_found(
+                        start,
+                        byte_len,
+                        kind,
+                        text,
+                        span_field_path,
+                        is_schema_assigned,
+                    ));
+                }
+            }
+
+            if is_z {
+                i += 1;
+            }
         }
     }
 }

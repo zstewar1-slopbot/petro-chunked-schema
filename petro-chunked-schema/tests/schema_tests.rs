@@ -596,13 +596,13 @@ fn test_find_strings_whole_blocks_minichunks_and_embedded() {
     let file_bytes = make_chunk(0x0100, true, &child_chunks);
     let df = load_dynamic_file(&file_bytes, None, &LoadOptions::default()).unwrap();
 
-    // Default scan: whole-block ASCII & ASCIIZ across leaf chunks and mini-chunks.
-    let mut whole_opts = FindStringsOptions {
+    // Default scan: whole-block ASCII/ASCIIZ PLUS NUL-terminated embedded ASCIIZ inside structs.
+    let default_opts = FindStringsOptions {
         min_whole_len: 1,
         ..FindStringsOptions::default()
     };
-    let hits = find_strings(&df, &whole_opts);
-    assert_eq!(hits.len(), 4);
+    let hits = find_strings(&df, &default_opts);
+    assert_eq!(hits.len(), 5);
 
     assert_eq!(hits[0].tree_path, "0/0");
     assert_eq!(hits[0].kind, StringMatchKind::WholeAsciiz);
@@ -611,6 +611,8 @@ fn test_find_strings_whole_blocks_minichunks_and_embedded() {
     assert!(!hits[0].is_mini_chunk);
     assert_eq!(hits[0].node_id, 0x0101);
     assert_eq!(hits[0].payload_offset, 0);
+    assert!(!hits[0].is_schema_assigned);
+    assert_eq!(hits[0].span_field_path, None);
 
     assert_eq!(hits[1].tree_path, "0/1");
     assert_eq!(hits[1].kind, StringMatchKind::WholeAsciizPadded);
@@ -628,7 +630,26 @@ fn test_find_strings_whole_blocks_minichunks_and_embedded() {
     assert_eq!(hits[3].kind, StringMatchKind::WholeAsciiz);
     assert_eq!(hits[3].text, "DiffuseMap");
 
-    // Kind filters: ASCIIZ only vs ASCII only.
+    let DynamicChunkContent::Children(children) = &df.chunks[0].content else {
+        panic!("expected root children");
+    };
+    let mixed_chunk_payload_offset = children[5].payload_offset;
+
+    assert_eq!(hits[4].tree_path, "0/5");
+    assert_eq!(hits[4].kind, StringMatchKind::EmbeddedAsciiz);
+    assert_eq!(hits[4].text, "ShaderFX");
+    assert_eq!(hits[4].payload_offset, 4);
+    assert_eq!(hits[4].byte_len, 9);
+    assert_eq!(hits[4].file_offset, mixed_chunk_payload_offset + 4);
+
+    // Whole-blocks-only mode suppresses embedded ASCIIZ hits.
+    let mut whole_opts = FindStringsOptions {
+        include_embedded_asciiz: false,
+        ..default_opts.clone()
+    };
+    assert_eq!(find_strings(&df, &whole_opts).len(), 4);
+
+    // Kind filters on whole blocks: ASCIIZ only vs ASCII only.
     whole_opts.include_ascii = false;
     let asciiz_only = find_strings(&df, &whole_opts);
     assert_eq!(asciiz_only.len(), 3);
@@ -640,27 +661,13 @@ fn test_find_strings_whole_blocks_minichunks_and_embedded() {
     assert_eq!(ascii_only.len(), 1);
     assert_eq!(ascii_only[0].text, "TAG4");
 
-    // Embedded scan discovers ASCIIZ and ASCII runs inside mixed_payload with exact file offsets.
-    let DynamicChunkContent::Children(children) = &df.chunks[0].content else {
-        panic!("expected root children");
+    // Opting into non-NUL embedded ASCII also discovers "ALBEDO".
+    let all_emb_opts = FindStringsOptions {
+        include_embedded_ascii: true,
+        ..default_opts
     };
-    let mixed_chunk_payload_offset = children[5].payload_offset;
-
-    let embedded_opts = FindStringsOptions {
-        include_embedded: true,
-        min_embedded_len: 4,
-        ..FindStringsOptions::default()
-    };
-    let emb_hits = find_strings(&df, &embedded_opts);
+    let emb_hits = find_strings(&df, &all_emb_opts);
     assert_eq!(emb_hits.len(), 6);
-
-    assert_eq!(emb_hits[4].tree_path, "0/5");
-    assert_eq!(emb_hits[4].kind, StringMatchKind::EmbeddedAsciiz);
-    assert_eq!(emb_hits[4].text, "ShaderFX");
-    assert_eq!(emb_hits[4].payload_offset, 4);
-    assert_eq!(emb_hits[4].byte_len, 9);
-    assert_eq!(emb_hits[4].file_offset, mixed_chunk_payload_offset + 4);
-
     assert_eq!(emb_hits[5].tree_path, "0/5");
     assert_eq!(emb_hits[5].kind, StringMatchKind::EmbeddedAscii);
     assert_eq!(emb_hits[5].text, "ALBEDO");
@@ -671,9 +678,89 @@ fn test_find_strings_whole_blocks_minichunks_and_embedded() {
     // max_results cap stops cleanly.
     let capped_opts = FindStringsOptions {
         max_results: 2,
-        ..embedded_opts
+        ..all_emb_opts
     };
     assert_eq!(find_strings(&df, &capped_opts).len(), 2);
+}
+
+#[test]
+fn test_find_strings_inside_byte_block_respects_typed_spans_and_padding() {
+    let yaml = r#"
+name: StructWithEmbeddedStrings
+root: Root
+types:
+  Root:
+    kind: chunks
+    mode: sequence
+    fields:
+      - name: entry
+        source_kind: id
+        id: 0x00000100
+        payload_kind: data
+        payload_type: TestStruct
+  TestStruct:
+    kind: byte_block
+    fields:
+      - name: scale
+        ty: f32
+      - name: name
+        ty: c_string
+      - name: code
+        ty: u32
+      - name: zero
+        ty: u32
+    pad_after: 16
+"#;
+    let schema = Schema::from_yaml_str(yaml).unwrap();
+    let resolved = SchemaLoader::resolve(schema, None).unwrap();
+
+    let mut payload = Vec::new();
+    // 1.0f32 = [0x00, 0x00, 0x80, 0x3F] — trailing 0x3F is '?' (printable ASCII!).
+    payload.extend_from_slice(&1.0f32.to_le_bytes());
+    payload.extend_from_slice(b"HeroMesh\0");
+    // Typed u32 fields whose bytes spell "FAKE\0..."
+    payload.extend_from_slice(b"FAKE");
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    // 16-byte pad_after containing an undiscovered NUL-terminated string
+    payload.extend_from_slice(b"HiddenTag\0");
+    payload.extend_from_slice(&[0u8; 6]);
+
+    let file_bytes = make_chunk(0x0000_0100, false, &payload);
+    let df = load_dynamic_file(&file_bytes, Some(&resolved), &LoadOptions::default()).unwrap();
+
+    // Default scan skips typed non-string spans (`scale`, `code`, `zero`) while preserving
+    // clean boundaries on `name` (no '?' bleed from `1.0f32`) AND finding strings in `<pad_after>`.
+    let hits = find_strings(&df, &FindStringsOptions::default());
+    assert_eq!(hits.len(), 2);
+
+    assert_eq!(hits[0].text, "HeroMesh");
+    assert_eq!(hits[0].payload_offset, 4);
+    assert_eq!(hits[0].byte_len, 9);
+    assert_eq!(hits[0].kind, StringMatchKind::EmbeddedAsciiz);
+    assert!(hits[0].is_schema_assigned);
+    assert_eq!(hits[0].span_field_path.as_deref(), Some("entry.name"));
+
+    assert_eq!(hits[1].text, "HiddenTag");
+    assert_eq!(hits[1].payload_offset, 21);
+    assert_eq!(hits[1].byte_len, 10);
+    assert_eq!(hits[1].kind, StringMatchKind::EmbeddedAsciiz);
+    assert!(!hits[1].is_schema_assigned);
+    assert_eq!(hits[1].span_field_path.as_deref(), Some("TestStruct.<pad_after>"));
+
+    // Turning off span skipping reveals raw hits including `FAKE` and the leading `0x3F` byte.
+    let raw_hits = find_strings(
+        &df,
+        &FindStringsOptions {
+            skip_typed_non_string_spans: false,
+            ..FindStringsOptions::default()
+        },
+    );
+    assert_eq!(raw_hits.len(), 3);
+    assert_eq!(raw_hits[0].text, "?HeroMesh");
+    assert_eq!(raw_hits[0].payload_offset, 3);
+    assert_eq!(raw_hits[1].text, "FAKE");
+    assert_eq!(raw_hits[1].payload_offset, 13);
+    assert_eq!(raw_hits[2].text, "HiddenTag");
 }
 
 #[cfg(feature = "codegen")]
